@@ -113,6 +113,12 @@ button:focus-visible,a:focus-visible{outline:3px solid var(--hv);outline-offset:
 .addrow{display:flex;gap:8px}
 .addrow input{flex:1}
 .addrow .btn{flex:0 0 auto}
+.emailrow{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.emailrow input{flex:1 1 120px;min-width:0}
+.suffix{font-weight:600;color:var(--muted);font-size:15px;overflow-wrap:anywhere}
+.suffix[hidden]{display:none}
+.emailstep{margin-top:12px;padding:12px;border:2px dashed var(--hv);border-radius:10px}
+.emailstep[hidden]{display:none}
 
 .notice{border-left:5px solid var(--hv);background:var(--surface);padding:10px 12px;border-radius:0 10px 10px 0;font-size:15px}
 .empty{text-align:center;padding:28px 12px}
@@ -140,7 +146,7 @@ button:focus-visible,a:focus-visible{outline:3px solid var(--hv);outline-offset:
 <script src="xlsx.full.min.js" onerror="(function(){var s=document.createElement('script');s.src='https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';document.head.appendChild(s);})()"></script>
 <script>
 "use strict";
-const APP_VERSION = "1.2"; // keep in step with CACHE in sw.js
+const APP_VERSION = "1.3"; // keep in step with CACHE in sw.js
 /* ---------- Definitions ---------- */
 const KEY = "gasfield.v1";
 const VISIT_NOS = ["1st","2nd","3rd","4th","5th","6th"];
@@ -303,12 +309,19 @@ function renderVisit(v){
   h += `</div>`;
   h += `<h2>Add locations</h2><div class="panel"><div class="addrow"><input type="text" id="addLoc" placeholder="e.g. WS01, WS04, BH2" autocapitalize="characters" autocomplete="off" aria-label="Location names" enterkeyhint="done"><button class="btn hv" data-act="add-loc">Add</button></div>
     <p class="muted small" style="margin:6px 0 0">Separate several with commas.</p></div>`;
-  h += `<h2>Finish</h2><div class="panel"><p class="small">Export a spreadsheet of this visit and save it to Egnyte or email it. You can export again after any changes.</p>
-    <div class="row">${navigator.share?`<button class="btn primary" data-act="export-share">Share spreadsheet</button>`:""}<button class="btn ${navigator.share?"":"primary"}" data-act="export-dl">Download spreadsheet</button></div>
+  h += `<h2>Finish</h2><div class="panel"><p class="small">Email or download a spreadsheet of this visit. You can export again after any changes.</p>
+    <div class="field" style="margin-bottom:12px"><label for="emailTo">Email to</label><div class="emailrow"><input type="text" id="emailTo" inputmode="email" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" placeholder="name" value="${esc(emailUser())}"><span class="suffix" id="emailSuffix" ${emailUser().includes("@")?"hidden":""}>${EMAIL_DOMAIN}</span></div></div>
+    <div class="row"><button class="btn primary" data-act="export-email">Email spreadsheet</button><button class="btn" data-act="export-dl">Download spreadsheet</button></div>
+    <div class="emailstep" id="emailStep" hidden><p><strong>Saved to Downloads.</strong> Open the email, tap the paperclip and attach <strong>${esc(fileName(v))}</strong>.</p><a class="btn hv block" href="#">Open email</a></div>
     <p class="muted small" style="margin:8px 0 0">${v.exportedAt?`Last exported ${esc(fmtDate(new Date(v.exportedAt)))}${v.updated>v.exportedAt?" — changed since":""}`:"Not exported yet"}</p></div>`;
   h += `<h2>Other</h2><div class="row"><button class="btn" data-act="next-visit">Start next visit with these locations</button><button class="btn danger" data-act="del-visit">Delete this visit</button></div>`;
   $("#app").innerHTML = h;
   const inp=$("#addLoc"); inp.addEventListener("keydown",e=>{ if(e.key==="Enter"){ e.preventDefault(); addLocations(v); } });
+  $("#emailTo").addEventListener("input", e=>{
+    try{ localStorage.setItem("gasfield.emailTo", e.target.value.trim()); }catch(err){}
+    $("#emailSuffix").hidden = e.target.value.includes("@");
+    const step=$("#emailStep"); if(step && !step.hidden) step.querySelector("a").href = emailLink(v);
+  });
 }
 
 function renderDetails(v){
@@ -407,39 +420,44 @@ function fileName(v){
   const parts=[v.project||"project", v.site, v.visitNo?("visit-"+v.visitNo):"", d].filter(filled).join("_");
   return parts.replace(/[^\w.\-]+/g,"-").replace(/-+/g,"-") + ".xlsx";
 }
+const EMAIL_DOMAIN = "@geosphere-environmental.co.uk";
+function emailUser(){ try{ return localStorage.getItem("gasfield.emailTo") || ""; }catch(e){ return ""; } }
+function emailAddress(){ const u = emailUser().trim(); if(!u) return ""; return u.includes("@") ? u : u + EMAIL_DOMAIN; }
+function emailLink(v){
+  const subject = `Gas monitoring – ${visitTitle(v)}${v.visitNo ? " – " + v.visitNo + " visit" : ""}`;
+  const body = [`Gas monitoring results attached: ${fileName(v)}`, "",
+    `Project: ${v.project || "–"}`, `Site: ${v.site || "–"}`, `Visit: ${v.visitNo || "–"}`,
+    `Date: ${fmtDate(v.datetime)}`, `Fieldwork by: ${v.by || "–"}`,
+    `Locations: ${v.locations.map(l => l.name).join(", ") || "–"}`].join("\n");
+  return `mailto:${encodeURIComponent(emailAddress()).replace(/%40/g, "@")}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+}
+function makeFile(v){
+  const out = XLSX.write(buildWorkbook(v), {bookType:"xlsx", type:"array"});
+  return new File([out], fileName(v), {type:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"});
+}
+function downloadFile(file){
+  const a = document.createElement("a"); a.href = URL.createObjectURL(file); a.download = file.name; document.body.appendChild(a); a.click();
+  setTimeout(()=>{ URL.revokeObjectURL(a.href); a.remove(); }, 4000);
+}
 async function exportVisit(v, mode){
   if(!window.XLSX){ toast("Spreadsheet export isn't loaded. Open the page once with signal, then try again."); return; }
   saveNow();
-  const wb = buildWorkbook(v);
-  const out = XLSX.write(wb, {bookType:"xlsx", type:"array"});
-  const type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", name=fileName(v);
-  const blob = new Blob([out],{type});
-  if(mode==="share"){
-    // Some browsers (Chrome, incl. Android) won't share .xlsx files, so fall back to a CSV of the Data sheet.
-    const csv = "\ufeff" + XLSX.utils.sheet_to_csv(wb.Sheets["Data"]);
-    const tries = [new File([blob], name, {type}), new File([csv], name.replace(/\.xlsx$/, ".csv"), {type:"text/csv"})];
-    const msg = `Gas monitoring: ${visitTitle(v)}${v.visitNo ? " – " + v.visitNo + " visit" : ""}`;
-    const why = [];
-    for(const file of tries){
-      const ext = file.name.split(".").pop();
-      if(!navigator.share){ why.push("no share support"); break; }
-      if(!(navigator.canShare && navigator.canShare({files:[file]}))){ why.push(ext + " not allowed"); continue; }
-      try{
-        await navigator.share({files:[file], title:file.name, text:msg});
-        markExported(v);
-        if(ext==="csv") toast("Shared as CSV. This phone can't share .xlsx files.", 4000);
-        return;
-      }catch(e){
-        if(e && e.name==="AbortError"){ toast("Share cancelled. Nothing was exported."); return; }
-        why.push(ext + ": " + (e && e.name || "error"));
-      }
-    }
-    exportVisit._why = why.join("; ");
+  const file = makeFile(v);
+  // Where the phone allows it (e.g. iPhone), the share sheet attaches the file straight to an email.
+  if(mode === "email" && navigator.share && navigator.canShare && navigator.canShare({files:[file]})){
+    try{ await navigator.share({files:[file], title:file.name}); markExported(v); return; }
+    catch(e){ if(e && e.name === "AbortError"){ toast("Cancelled. Nothing was exported."); return; } }
   }
-  const a=document.createElement("a"); a.href=URL.createObjectURL(blob); a.download=name; document.body.appendChild(a); a.click();
-  if(mode==="share"){ setTimeout(()=>toast(`Couldn't share (${exportVisit._why || "unknown"}). Downloaded instead.`, 7000), 50); }
-  setTimeout(()=>{ URL.revokeObjectURL(a.href); a.remove(); }, 4000);
+  // Otherwise (e.g. Chrome on Android): download, then offer a pre-filled email to attach it to.
+  downloadFile(file);
   markExported(v);
+  if(mode === "email") showEmailStep(v);
+}
+function showEmailStep(v){
+  const box = $("#emailStep"); if(!box) return;
+  box.querySelector("a").href = emailLink(v); box.hidden = false;
+  clearTimeout(toastTimer); $("#toast").hidden = true; // keep the Open email button clear
+  box.scrollIntoView({block:"nearest", behavior:"smooth"});
 }
 function markExported(v){ v.exportedAt = Date.now(); if(v.updated>v.exportedAt) v.exportedAt=v.updated; saveNow(); renderVisit(v); toast("Exported "+fileName(v)); }
 
@@ -471,7 +489,7 @@ document.addEventListener("click", e=>{
   else if(act==="reload"){ saveNow(); location.reload(); }
   else if(act==="new-visit"){ const nv=newVisit(); location.hash=`#/v/${nv.id}/details`; }
   else if(act==="add-loc"){ addLocations(v); }
-  else if(act==="export-share"){ exportVisit(v,"share"); }
+  else if(act==="export-email"){ exportVisit(v,"email"); }
   else if(act==="export-dl"){ exportVisit(v,"download"); }
   else if(act==="next-visit"){ const nv=newVisit(v); location.hash=`#/v/${nv.id}/details`; toast("New visit started with the same locations"); }
   else if(act==="del-loc"){ const l=cur.obj; if(confirm(`Delete ${l.name} and all its readings?`)){ v.locations=v.locations.filter(x=>x!==l); touch(v); saveNow(); location.hash=`#/v/${v.id}`; } }
