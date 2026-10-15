@@ -24,5 +24,8 @@ Important
   - On iPhone, the home screen app and Safari keep separate data: always use the icon.
 
 Updating the tool
-Upload new files over the old ones and change CACHE in sw.js (e.g. gasfield-v2).
-Phones pick up the new version the next time it is opened with signal (then reopened).
+Change APP_VERSION near the top of the script in index.html and CACHE in sw.js to the same
+new number (e.g. 1.3 / gasfield-1.3), then upload both over the old files.
+Phones with signal load the new version next time the app is opened; if the app is already
+open, a "new version is ready" bar appears with a Reload button. The version number is shown
+at the bottom of the home screen. GitHub Pages can take a few minutes to publish changes.

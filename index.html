@@ -123,6 +123,9 @@ button:focus-visible,a:focus-visible{outline:3px solid var(--hv);outline-offset:
 .footer-nav .btn[disabled]{opacity:.35}
 .toast{position:fixed;left:50%;bottom:calc(90px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:10px 16px;border-radius:10px;font-weight:600;z-index:20;max-width:90vw}
 .toast[hidden]{display:none}
+.update{position:fixed;left:12px;right:12px;bottom:calc(84px + env(safe-area-inset-bottom,0px));z-index:21;background:var(--surface);border:2px solid var(--hv);border-radius:12px;padding:10px 12px;display:flex;align-items:center;gap:12px;font-weight:600;box-shadow:0 4px 16px rgba(0,0,0,.18)}
+.update span{flex:1}
+.version{text-align:center;margin-top:28px}
 .summary dl{display:grid;grid-template-columns:auto 1fr;gap:4px 12px;margin:0 0 10px}
 .summary dt{color:var(--muted);font-size:14px}
 .summary dd{margin:0;font-size:15px;font-weight:600}
@@ -137,6 +140,7 @@ button:focus-visible,a:focus-visible{outline:3px solid var(--hv);outline-offset:
 <script src="xlsx.full.min.js" onerror="(function(){var s=document.createElement('script');s.src='https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';document.head.appendChild(s);})()"></script>
 <script>
 "use strict";
+const APP_VERSION = "1.2"; // keep in step with CACHE in sw.js
 /* ---------- Definitions ---------- */
 const KEY = "gasfield.v1";
 const VISIT_NOS = ["1st","2nd","3rd","4th","5th","6th"];
@@ -204,7 +208,7 @@ function fmtDate(s){ if(!s) return "No date"; const d=new Date(s); if(isNaN(d)) 
 function fmtTime(d){ return d.toLocaleTimeString("en-GB",{hour:"2-digit",minute:"2-digit"}); }
 function touch(v){ v.updated = Date.now(); scheduleSave(); }
 let toastTimer;
-function toast(msg){ const t=$("#toast"); t.textContent=msg; t.hidden=false; clearTimeout(toastTimer); toastTimer=setTimeout(()=>t.hidden=true,2600); }
+function toast(msg, ms=2600){ const t=$("#toast"); t.textContent=msg; t.hidden=false; clearTimeout(toastTimer); toastTimer=setTimeout(()=>t.hidden=true,ms); }
 function visitTitle(v){ return [v.project, v.site].filter(filled).join(" ") || "Untitled visit"; }
 
 /* ---------- Validation (advisory only) ---------- */
@@ -275,6 +279,7 @@ function renderHome(){
         <div class="sub">${esc(fmtDate(v.datetime))} · ${v.locations.length} location${v.locations.length===1?"":"s"}, ${done} complete</div><div style="margin-top:4px">${exp}</div></div><span class="chev">›</span></a>`;
     }).join("")}</div>`;
   h += `<div style="margin-top:16px"><button class="btn primary block" data-act="new-visit">Start a new visit</button></div>`;
+  h += `<p class="muted small version">Version ${APP_VERSION}</p>`;
   $("#app").innerHTML = h;
 }
 
@@ -414,18 +419,25 @@ async function exportVisit(v, mode){
     const csv = "\ufeff" + XLSX.utils.sheet_to_csv(wb.Sheets["Data"]);
     const tries = [new File([blob], name, {type}), new File([csv], name.replace(/\.xlsx$/, ".csv"), {type:"text/csv"})];
     const msg = `Gas monitoring: ${visitTitle(v)}${v.visitNo ? " – " + v.visitNo + " visit" : ""}`;
+    const why = [];
     for(const file of tries){
-      if(!(navigator.canShare && navigator.canShare({files:[file]}))) continue;
+      const ext = file.name.split(".").pop();
+      if(!navigator.share){ why.push("no share support"); break; }
+      if(!(navigator.canShare && navigator.canShare({files:[file]}))){ why.push(ext + " not allowed"); continue; }
       try{
         await navigator.share({files:[file], title:file.name, text:msg});
         markExported(v);
-        if(file.name.endsWith(".csv")) toast("Shared as CSV. This phone can't share .xlsx files.");
+        if(ext==="csv") toast("Shared as CSV. This phone can't share .xlsx files.", 4000);
         return;
-      }catch(e){ if(e && e.name==="AbortError"){ toast("Share cancelled. Nothing was exported."); return; } }
+      }catch(e){
+        if(e && e.name==="AbortError"){ toast("Share cancelled. Nothing was exported."); return; }
+        why.push(ext + ": " + (e && e.name || "error"));
+      }
     }
-    toast("Sharing files isn't supported here, so it's downloading instead.");
+    exportVisit._why = why.join("; ");
   }
   const a=document.createElement("a"); a.href=URL.createObjectURL(blob); a.download=name; document.body.appendChild(a); a.click();
+  if(mode==="share"){ setTimeout(()=>toast(`Couldn't share (${exportVisit._why || "unknown"}). Downloaded instead.`, 7000), 50); }
   setTimeout(()=>{ URL.revokeObjectURL(a.href); a.remove(); }, 4000);
   markExported(v);
 }
@@ -456,6 +468,7 @@ document.addEventListener("click", e=>{
   const btn = e.target.closest("[data-act]"); if(!btn) return;
   const act = btn.dataset.act, v = cur.visit;
   if(act==="go"){ if(btn.dataset.href) location.hash = btn.dataset.href; }
+  else if(act==="reload"){ saveNow(); location.reload(); }
   else if(act==="new-visit"){ const nv=newVisit(); location.hash=`#/v/${nv.id}/details`; }
   else if(act==="add-loc"){ addLocations(v); }
   else if(act==="export-share"){ exportVisit(v,"share"); }
@@ -485,7 +498,22 @@ window.addEventListener("storage", e=>{ if(e.key===KEY){ db=load(); route(); } }
 route();
 
 if("serviceWorker" in navigator && location.protocol==="https:"){
-  window.addEventListener("load", ()=>navigator.serviceWorker.register("sw.js").catch(()=>{}));
+  window.addEventListener("load", async ()=>{
+    try{
+      const reg = await navigator.serviceWorker.register("sw.js", {updateViaCache:"none"});
+      // Look for a new version whenever the app comes back to the foreground.
+      document.addEventListener("visibilitychange", ()=>{ if(!document.hidden) reg.update().catch(()=>{}); });
+      let hadController = !!navigator.serviceWorker.controller;
+      navigator.serviceWorker.addEventListener("controllerchange", ()=>{
+        if(!hadController){ hadController = true; return; } // first install, nothing to announce
+        saveNow();
+        if(document.getElementById("upd")) return;
+        const d = document.createElement("div"); d.id = "upd"; d.className = "update";
+        d.innerHTML = '<span>A new version is ready. Your readings are saved.</span><button class="btn hv" data-act="reload">Reload</button>';
+        document.body.appendChild(d);
+      });
+    }catch(e){}
+  });
 }
 </script>
 </body>
