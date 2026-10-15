@@ -405,14 +405,23 @@ function fileName(v){
 async function exportVisit(v, mode){
   if(!window.XLSX){ toast("Spreadsheet export isn't loaded. Open the page once with signal, then try again."); return; }
   saveNow();
-  const out = XLSX.write(buildWorkbook(v), {bookType:"xlsx", type:"array"});
+  const wb = buildWorkbook(v);
+  const out = XLSX.write(wb, {bookType:"xlsx", type:"array"});
   const type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", name=fileName(v);
   const blob = new Blob([out],{type});
   if(mode==="share"){
-    const file = new File([blob], name, {type});
-    if(navigator.canShare && navigator.canShare({files:[file]})){
-      try{ await navigator.share({files:[file], title:name}); markExported(v); return; }
-      catch(e){ if(e && e.name==="AbortError"){ toast("Share cancelled. Nothing was exported."); return; } }
+    // Some browsers (Chrome, incl. Android) won't share .xlsx files, so fall back to a CSV of the Data sheet.
+    const csv = "\ufeff" + XLSX.utils.sheet_to_csv(wb.Sheets["Data"]);
+    const tries = [new File([blob], name, {type}), new File([csv], name.replace(/\.xlsx$/, ".csv"), {type:"text/csv"})];
+    const msg = `Gas monitoring: ${visitTitle(v)}${v.visitNo ? " – " + v.visitNo + " visit" : ""}`;
+    for(const file of tries){
+      if(!(navigator.canShare && navigator.canShare({files:[file]}))) continue;
+      try{
+        await navigator.share({files:[file], title:file.name, text:msg});
+        markExported(v);
+        if(file.name.endsWith(".csv")) toast("Shared as CSV. This phone can't share .xlsx files.");
+        return;
+      }catch(e){ if(e && e.name==="AbortError"){ toast("Share cancelled. Nothing was exported."); return; } }
     }
     toast("Sharing files isn't supported here, so it's downloading instead.");
   }

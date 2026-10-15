@@ -1,5 +1,5 @@
 // Offline support: serve the app from the phone's cache, refresh it in the background when there's signal.
-const CACHE = "gasfield-v1";
+const CACHE = "gasfield-v2";
 const ASSETS = ["./", "./index.html", "./xlsx.full.min.js", "./manifest.webmanifest",
                 "./icon-192.png", "./icon-512.png", "./apple-touch-icon.png"];
 
