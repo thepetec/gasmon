@@ -1,0 +1,483 @@
+<!DOCTYPE html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Gas monitoring field sheet</title>
+<meta name="theme-color" content="#F26419">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Gas sheet">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="icon" href="icon-192.png">
+<style>
+:root{
+  --bg:#EEF0EE; --surface:#FFFFFF; --field:#F7F8F7; --ink:#1A1D1F; --muted:#565E63; --line:#C9CFCE;
+  --hv:#F26419; --hv-ink:#1A1D1F; --hv-text:#A63F06; --tape:#D4D8DA;
+  --warn:#B3261E; --warn-bg:#FCE8E6; --ok:#2E6B30; --ok-bg:#E3F1E3;
+  color-scheme:light;
+  box-sizing:border-box;
+  padding-top:env(safe-area-inset-top,0px);
+  padding-bottom:env(safe-area-inset-bottom,0px);
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --bg:#121517; --surface:#1C2023; --field:#171A1C; --ink:#ECEDEC; --muted:#9BA3A7; --line:#363C40;
+    --hv:#FF7A2F; --hv-ink:#121517; --hv-text:#FF9C62; --tape:#8E9599;
+    --warn:#FF8A80; --warn-bg:#3A1C1A; --ok:#8FD18F; --ok-bg:#1B2E1C;
+    color-scheme:dark;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#121517; --surface:#1C2023; --field:#171A1C; --ink:#ECEDEC; --muted:#9BA3A7; --line:#363C40;
+  --hv:#FF7A2F; --hv-ink:#121517; --hv-text:#FF9C62; --tape:#8E9599;
+  --warn:#FF8A80; --warn-bg:#3A1C1A; --ok:#8FD18F; --ok-bg:#1B2E1C;
+  color-scheme:dark;
+}
+*,*::before,*::after{box-sizing:inherit}
+html{scroll-padding-top:env(safe-area-inset-top,0px);-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--ink);font:17px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+body::before{content:"";position:fixed;inset:0 0 auto;height:env(safe-area-inset-top,0px);z-index:10;background:var(--hv)}
+button,input,textarea,select{font:inherit;color:inherit}
+a{color:inherit}
+
+/* Top bar: hi-vis band with reflective tape */
+.bar{position:sticky;top:env(safe-area-inset-top,0px);z-index:5;color:var(--hv-ink);
+  background:linear-gradient(to bottom,var(--hv) 0 calc(100% - 12px),var(--tape) calc(100% - 12px) calc(100% - 5px),var(--hv) calc(100% - 5px));
+  padding:10px 14px 20px;display:flex;align-items:center;gap:10px}
+.bar h1{font-size:19px;line-height:1.2;margin:0;font-weight:800;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.bar .back{border:0;background:rgba(0,0,0,.12);color:var(--hv-ink);font-weight:700;border-radius:8px;padding:8px 12px;min-height:44px;cursor:pointer}
+.status{font-size:12px;font-weight:600;white-space:nowrap;flex:0 0 auto;max-width:42%;overflow:hidden;text-overflow:ellipsis}
+.status.err{background:var(--warn);color:#fff;padding:2px 8px;border-radius:6px}
+
+main{max-width:720px;margin:0 auto;padding:16px 14px 120px}
+h2{font-size:15px;font-weight:700;color:var(--muted);margin:26px 2px 8px}
+h2:first-child{margin-top:4px}
+.panel{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:14px}
+.panel + .panel{margin-top:10px}
+.muted{color:var(--muted)}
+.small{font-size:14px}
+p{margin:0 0 8px}
+
+/* Fields */
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px 12px}
+.field{min-width:0}
+.field.wide{grid-column:1/-1}
+.field label{display:block;font-size:14px;font-weight:650;margin:0 0 4px}
+.unit{font-weight:500;color:var(--muted)}
+input[type=text],input[type=datetime-local],textarea{width:100%;background:var(--field);border:2px solid var(--line);border-radius:10px;padding:11px 12px;font-size:20px;min-height:52px;font-variant-numeric:tabular-nums;-webkit-appearance:none;appearance:none}
+textarea{font-size:17px;min-height:96px;resize:vertical}
+input:focus,textarea:focus{outline:none;border-color:var(--hv);box-shadow:0 0 0 3px color-mix(in srgb,var(--hv) 30%,transparent)}
+.field.has-warn input{border-color:var(--warn)}
+.warn{color:var(--warn);font-size:14px;font-weight:600;margin:4px 0 0;min-height:0}
+.warn:empty{display:none}
+.chips{display:flex;gap:6px;margin-top:6px;flex-wrap:wrap}
+.chip{border:1px solid var(--line);background:var(--surface);border-radius:999px;padding:4px 12px;font-size:15px;min-height:34px;cursor:pointer}
+.chip:active{background:var(--hv);color:var(--hv-ink)}
+.group-title{grid-column:1/-1;font-weight:750;font-size:16px;margin:6px 0 -4px;padding-top:10px;border-top:1px solid var(--line)}
+.group-title:first-child{border-top:0;padding-top:0;margin-top:0}
+.group-title .unit{font-size:14px}
+
+/* Segmented choices */
+.seg{display:flex;flex-wrap:wrap;gap:6px}
+.seg button{flex:1 1 auto;min-height:46px;padding:8px 12px;border:2px solid var(--line);background:var(--field);border-radius:10px;font-weight:600;cursor:pointer}
+.seg button[aria-pressed="true"]{background:var(--hv);border-color:var(--hv);color:var(--hv-ink)}
+
+/* Buttons */
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:50px;padding:10px 18px;border-radius:10px;border:2px solid var(--ink);background:transparent;font-weight:700;cursor:pointer;text-decoration:none}
+.btn.primary{background:var(--ink);color:var(--bg)}
+.btn.hv{background:var(--hv);border-color:var(--hv);color:var(--hv-ink)}
+.btn.danger{border-color:var(--warn);color:var(--warn)}
+.btn.block{display:flex;width:100%}
+.row{display:flex;gap:10px;flex-wrap:wrap}
+.row > .btn{flex:1 1 140px}
+button:focus-visible,a:focus-visible{outline:3px solid var(--hv);outline-offset:2px}
+
+/* Lists */
+.list{display:flex;flex-direction:column;gap:8px}
+.item{display:flex;align-items:center;gap:12px;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:12px 14px;text-decoration:none;min-height:64px}
+.item .main{flex:1;min-width:0}
+.item .title{font-weight:750}
+.item .sub{font-size:14px;color:var(--muted)}
+.chev{color:var(--muted);font-size:22px}
+.tag{display:inline-block;background:var(--hv);color:var(--hv-ink);font-weight:800;font-size:17px;padding:5px 10px;border-radius:5px;min-width:64px;text-align:center;letter-spacing:.01em;white-space:nowrap;max-width:46vw;overflow:hidden;text-overflow:ellipsis}
+.tag.fresh{background:var(--tape);color:#1A1D1F}
+.prog{height:5px;border-radius:3px;background:var(--line);margin-top:6px;overflow:hidden}
+.prog i{display:block;height:100%;background:var(--ok)}
+.pill{display:inline-block;font-size:13px;font-weight:700;padding:2px 8px;border-radius:6px}
+.pill.warn-p{background:var(--warn-bg);color:var(--warn)}
+.pill.ok-p{background:var(--ok-bg);color:var(--ok)}
+
+.addrow{display:flex;gap:8px}
+.addrow input{flex:1}
+.addrow .btn{flex:0 0 auto}
+
+.notice{border-left:5px solid var(--hv);background:var(--surface);padding:10px 12px;border-radius:0 10px 10px 0;font-size:15px}
+.empty{text-align:center;padding:28px 12px}
+
+.footer-nav{position:fixed;left:0;right:0;bottom:0;z-index:5;background:var(--surface);border-top:1px solid var(--line);
+  padding:10px 14px calc(10px + env(safe-area-inset-bottom,0px));display:flex;gap:10px}
+.footer-nav .btn{flex:1}
+.footer-nav .btn[disabled]{opacity:.35}
+.toast{position:fixed;left:50%;bottom:calc(90px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:10px 16px;border-radius:10px;font-weight:600;z-index:20;max-width:90vw}
+.toast[hidden]{display:none}
+.summary dl{display:grid;grid-template-columns:auto 1fr;gap:4px 12px;margin:0 0 10px}
+.summary dt{color:var(--muted);font-size:14px}
+.summary dd{margin:0;font-size:15px;font-weight:600}
+@media (prefers-reduced-motion:no-preference){.prog i{transition:width .2s}}
+</style>
+</head>
+<body>
+<div class="bar" id="bar"></div>
+<main id="app"></main>
+<div class="toast" id="toast" hidden></div>
+
+<script src="xlsx.full.min.js" onerror="(function(){var s=document.createElement('script');s.src='https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';document.head.appendChild(s);})()"></script>
+<script>
+"use strict";
+/* ---------- Definitions ---------- */
+const KEY = "gasfield.v1";
+const VISIT_NOS = ["1st","2nd","3rd","4th","5th","6th"];
+const INSTRUMENTS = ["GFM436 / PID MultiRAE Lite","GA2000 / PID MultiRAE Lite","Other"];
+const WEATHER = [
+  {k:"temp", opts:["Cold","Cool","Warm","Hot"]},
+  {k:"sky",  opts:["Sunny","Cloudy","Overcast"]},
+  {k:"wet",  opts:["Wet","Damp","Dry"]},
+  {k:"wind", opts:["Calm","Breezy","Windy","Very windy"]}
+];
+const GAS_CHIPS = ["<0.1","nm"];
+const LOC_GROUPS = [
+  {title:"Atmospheric pressure", fields:[{k:"pressure",label:"Pressure",unit:"mb",chips:["nm"]}]},
+  {title:"Flow", unit:"l/hr", fields:[{k:"flowPeak",label:"Peak",chips:["0","nm"]},{k:"flowSteady",label:"Steady",chips:["0","nm"]}]},
+  {title:"Methane", unit:"% v/v", fields:[{k:"ch4Peak",label:"Peak",chips:GAS_CHIPS},{k:"ch4Steady",label:"Steady",chips:GAS_CHIPS}]},
+  {title:"Carbon dioxide", unit:"% v/v", fields:[{k:"co2Peak",label:"Peak",chips:GAS_CHIPS},{k:"co2Steady",label:"Steady",chips:GAS_CHIPS}]},
+  {title:"Oxygen and other gases", fields:[
+    {k:"o2Min",label:"Min. O₂",unit:"% v/v",chips:["nm"]},
+    {k:"h2s",label:"H₂S",unit:"ppm",chips:["0","nm"]},
+    {k:"co",label:"CO",unit:"ppm",chips:["0","nm"]},
+    {k:"voc",label:"VOCs / PID",unit:"ppm",chips:["0","nm"]}]},
+  {title:"Well", fields:[
+    {k:"duration",label:"Monitoring duration",unit:"mins",chips:[]},
+    {k:"pipeHeight",label:"Pipe/casing height",unit:"m",chips:["nm"]},
+    {k:"depthWater",label:"Depth to water",unit:"m",chips:["Dry","nm"]},
+    {k:"depthBase",label:"Depth to base of well",unit:"m",chips:["nm"]}]}
+];
+const LOC_FIELDS = LOC_GROUPS.flatMap(g=>g.fields);
+const FRESH_FIELDS = [
+  {k:"ch4",label:"Methane",unit:"% v/v",chips:GAS_CHIPS},
+  {k:"co2",label:"Carbon dioxide",unit:"% v/v",chips:GAS_CHIPS},
+  {k:"o2",label:"Oxygen",unit:"% v/v",chips:["nm"]},
+  {k:"h2s",label:"H₂S",unit:"ppm",chips:["0","nm"]},
+  {k:"co",label:"CO",unit:"ppm",chips:["0","nm"]},
+  {k:"voc",label:"VOCs / PID",unit:"ppm",chips:["0","nm"]}
+];
+
+/* ---------- Storage ---------- */
+let db = load();
+function load(){
+  try{ const s = localStorage.getItem(KEY); if(s){ const d = JSON.parse(s); if(d && d.visits) return d; } }catch(e){}
+  return {visits:{}};
+}
+let saveTimer = null, lastSaved = null, saveError = false;
+function scheduleSave(){ clearTimeout(saveTimer); saveTimer = setTimeout(saveNow, 250); }
+function saveNow(){
+  clearTimeout(saveTimer); saveTimer = null;
+  try{ localStorage.setItem(KEY, JSON.stringify(db)); lastSaved = new Date(); saveError = false; }
+  catch(e){ saveError = true; }
+  paintStatus();
+}
+window.addEventListener("pagehide", saveNow);
+document.addEventListener("visibilitychange", ()=>{ if(document.hidden) saveNow(); });
+try{ if(navigator.storage && navigator.storage.persist) navigator.storage.persist(); }catch(e){}
+
+/* ---------- Helpers ---------- */
+const $ = s => document.querySelector(s);
+const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2,7);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const filled = v => v !== undefined && v !== null && String(v).trim() !== "";
+const isNum = v => /^-?(\d+\.?\d*|\.\d+)$/.test(String(v).trim());
+const num = v => isNum(v) ? parseFloat(v) : null;
+function nowLocal(){ const d=new Date(); d.setMinutes(d.getMinutes()-d.getTimezoneOffset()); return d.toISOString().slice(0,16); }
+function fmtDate(s){ if(!s) return "No date"; const d=new Date(s); if(isNaN(d)) return s; return d.toLocaleString("en-GB",{day:"numeric",month:"short",year:"numeric",hour:"2-digit",minute:"2-digit"}); }
+function fmtTime(d){ return d.toLocaleTimeString("en-GB",{hour:"2-digit",minute:"2-digit"}); }
+function touch(v){ v.updated = Date.now(); scheduleSave(); }
+let toastTimer;
+function toast(msg){ const t=$("#toast"); t.textContent=msg; t.hidden=false; clearTimeout(toastTimer); toastTimer=setTimeout(()=>t.hidden=true,2600); }
+function visitTitle(v){ return [v.project, v.site].filter(filled).join(" ") || "Untitled visit"; }
+
+/* ---------- Validation (advisory only) ---------- */
+function tokenOK(v){ const t=String(v).trim().toLowerCase(); return t==="nm"||t==="dry"||/^<\s*\d*\.?\d+$/.test(t); }
+function checkLoc(o){
+  const w = {};
+  for(const f of LOC_FIELDS){ const v=o[f.k]; if(filled(v) && !isNum(v) && !tokenOK(v)) w[f.k]="Not a number. Use a value, <0.1, Dry or nm."; }
+  const p=num(o.pressure); if(p!==null && (p<950||p>1060)) w.pressure="Unusual pressure. Expected roughly 950–1060 mb.";
+  for(const k of ["ch4Peak","ch4Steady","co2Peak","co2Steady","o2Min"]){ const n=num(o[k]); if(n!==null&&(n<0||n>100)) w[k]="Must be between 0 and 100%."; }
+  const o2=num(o.o2Min); if(o2!==null && o2>21.5 && !w.o2Min) w.o2Min="Above atmospheric oxygen (about 21%). Check.";
+  for(const g of ["ch4","co2"]){ const pk=num(o[g+"Peak"]), st=num(o[g+"Steady"]); if(pk!==null&&st!==null&&st>pk&&!w[g+"Steady"]) w[g+"Steady"]="Steady is higher than peak."; }
+  const ch4=Math.max(num(o.ch4Peak)??0,num(o.ch4Steady)??0), co2=Math.max(num(o.co2Peak)??0,num(o.co2Steady)??0);
+  if(o2!==null && ch4+co2+o2>100.5 && !w.o2Min) w.o2Min="CH₄ + CO₂ + O₂ add up to more than 100%.";
+  const dw=num(o.depthWater), db_=num(o.depthBase); if(dw!==null&&db_!==null&&dw>db_) w.depthWater="Deeper than the base of the well.";
+  return w;
+}
+function checkFresh(o){
+  const w={};
+  for(const f of FRESH_FIELDS){ const v=o[f.k]; if(filled(v)&&!isNum(v)&&!tokenOK(v)) w[f.k]="Not a number. Use a value, <0.1 or nm."; }
+  const c=num(o.ch4); if(c!==null&&c>=0.1&&!w.ch4) w.ch4="Fresh air should read near zero. Check the instrument.";
+  const c2=num(o.co2); if(c2!==null&&c2>0.2&&!w.co2) w.co2="Fresh air should read near zero. Check the instrument.";
+  const x=num(o.o2); if(x!==null&&(x<20||x>21.5)&&!w.o2) w.o2="Fresh air oxygen is usually 20.5–21%. Check calibration.";
+  return w;
+}
+function locStatus(o){ const n=LOC_FIELDS.filter(f=>filled(o[f.k])).length; return {n, total:LOC_FIELDS.length, warns:Object.keys(checkLoc(o)).length}; }
+
+/* ---------- Rendering ---------- */
+let cur = {visit:null, obj:null, kind:null};
+function bar(title, backHref){
+  $("#bar").innerHTML = (backHref?`<button class="back" data-act="go" data-href="${backHref}" aria-label="Back">‹ Back</button>`:"")+
+    `<h1>${esc(title)}</h1><span class="status" id="status" role="status"></span>`;
+  paintStatus();
+}
+function paintStatus(){
+  const s=$("#status"); if(!s) return;
+  if(saveError){ s.className="status err"; s.textContent="NOT SAVED: storage full or blocked"; return; }
+  s.className="status"; s.textContent = lastSaved ? "Saved on phone "+fmtTime(lastSaved) : (saveTimer?"Saving…":"");
+}
+function fieldHTML(f, o){
+  const chips = (f.chips||[]).length ? `<div class="chips">${f.chips.map(c=>`<button type="button" class="chip" data-chip="${esc(c)}" data-for="${f.k}">${esc(c)}</button>`).join("")}</div>` : "";
+  return `<div class="field" id="fd_${f.k}"><label for="f_${f.k}">${esc(f.label)}${f.unit?` <span class="unit">${esc(f.unit)}</span>`:""}</label>
+    <input id="f_${f.k}" data-k="${f.k}" type="text" inputmode="decimal" autocomplete="off" autocorrect="off" spellcheck="false" enterkeyhint="next" value="${esc(o[f.k])}">
+    ${chips}<p class="warn" id="w_${f.k}"></p></div>`;
+}
+function segHTML(key, opts, val){
+  return `<div class="seg" role="group" data-set="${key}">${opts.map(o=>`<button type="button" data-val="${esc(o)}" aria-pressed="${val===o}">${esc(o)}</button>`).join("")}</div>`;
+}
+function paintWarnings(){
+  if(!cur.obj || (cur.kind!=="loc" && cur.kind!=="fresh")) return;
+  const w = cur.kind==="loc" ? checkLoc(cur.obj) : checkFresh(cur.obj);
+  const fields = cur.kind==="loc" ? LOC_FIELDS : FRESH_FIELDS;
+  for(const f of fields){ const p=$("#w_"+f.k), fd=$("#fd_"+f.k); if(!p) continue; p.textContent=w[f.k]||""; fd.classList.toggle("has-warn",!!w[f.k]); }
+}
+
+function renderHome(){
+  cur={visit:null,obj:null,kind:"home"};
+  bar("Gas monitoring");
+  const visits = Object.values(db.visits).sort((a,b)=>(b.updated||0)-(a.updated||0));
+  const standalone = window.matchMedia("(display-mode: standalone)").matches || navigator.standalone;
+  let h = "";
+  if(!standalone) h += `<p class="notice">Add this page to your home screen so it opens without signal. Your readings stay on this phone until you export them.</p>`;
+  h += `<h2>Visits on this phone</h2>`;
+  if(!visits.length) h += `<div class="panel empty"><p>No visits yet.</p><p class="muted small">Start a visit, then add the locations you're monitoring today.</p></div>`;
+  else h += `<div class="list">${visits.map(v=>{
+      const done=v.locations.filter(l=>locStatus(l).n===LOC_FIELDS.length).length;
+      const exp = !v.exportedAt ? `<span class="pill warn-p">Not exported</span>` : (v.updated>v.exportedAt ? `<span class="pill warn-p">Changed since export</span>` : `<span class="pill ok-p">Exported</span>`);
+      return `<a class="item" href="#/v/${v.id}"><div class="main"><div class="title">${esc(visitTitle(v))}${v.visitNo?` · ${esc(v.visitNo)} visit`:""}</div>
+        <div class="sub">${esc(fmtDate(v.datetime))} · ${v.locations.length} location${v.locations.length===1?"":"s"}, ${done} complete</div><div style="margin-top:4px">${exp}</div></div><span class="chev">›</span></a>`;
+    }).join("")}</div>`;
+  h += `<div style="margin-top:16px"><button class="btn primary block" data-act="new-visit">Start a new visit</button></div>`;
+  $("#app").innerHTML = h;
+}
+
+function renderVisit(v){
+  cur={visit:v,obj:null,kind:"visit"};
+  bar(visitTitle(v), "#/");
+  const weather = WEATHER.map(w=>v[w.k]).filter(filled).join(", ");
+  const inst = v.instrument==="Other" ? (v.instrumentOther||"Other") : v.instrument;
+  let h = `<h2>Visit details</h2><div class="panel summary"><dl>
+      <dt>Project</dt><dd>${esc(v.project||"–")}</dd><dt>Site</dt><dd>${esc(v.site||"–")}</dd>
+      <dt>Visit</dt><dd>${esc(v.visitNo||"–")}</dd><dt>Date</dt><dd>${esc(fmtDate(v.datetime))}</dd>
+      <dt>By</dt><dd>${esc(v.by||"–")}</dd><dt>Instrument</dt><dd>${esc(inst||"–")}</dd><dt>Weather</dt><dd>${esc(weather||"–")}</dd></dl>
+      <a class="btn block" href="#/v/${v.id}/details">Edit visit details</a></div>`;
+  const fw = Object.keys(checkFresh(v.freshAir)).length, fn = FRESH_FIELDS.filter(f=>filled(v.freshAir[f.k])).length;
+  h += `<h2>Readings</h2><div class="list">
+    <a class="item" href="#/v/${v.id}/fresh"><span class="tag fresh">Fresh air</span><div class="main"><div class="sub">${fn} of ${FRESH_FIELDS.length} filled${fw?` · <span class="pill warn-p">${fw} to check</span>`:""}</div>
+    <div class="prog"><i style="width:${fn/FRESH_FIELDS.length*100}%"></i></div></div><span class="chev">›</span></a>`;
+  h += v.locations.map(l=>{ const s=locStatus(l);
+    return `<a class="item" href="#/v/${v.id}/l/${l.id}"><span class="tag">${esc(l.name)}</span><div class="main"><div class="sub">${s.n===s.total?"Complete":`${s.n} of ${s.total} filled`}${s.warns?` · <span class="pill warn-p">${s.warns} to check</span>`:""}</div>
+      <div class="prog"><i style="width:${s.n/s.total*100}%"></i></div></div><span class="chev">›</span></a>`; }).join("");
+  h += `</div>`;
+  h += `<h2>Add locations</h2><div class="panel"><div class="addrow"><input type="text" id="addLoc" placeholder="e.g. WS01, WS04, BH2" autocapitalize="characters" autocomplete="off" aria-label="Location names" enterkeyhint="done"><button class="btn hv" data-act="add-loc">Add</button></div>
+    <p class="muted small" style="margin:6px 0 0">Separate several with commas.</p></div>`;
+  h += `<h2>Finish</h2><div class="panel"><p class="small">Export a spreadsheet of this visit and save it to Egnyte or email it. You can export again after any changes.</p>
+    <div class="row">${navigator.share?`<button class="btn primary" data-act="export-share">Share spreadsheet</button>`:""}<button class="btn ${navigator.share?"":"primary"}" data-act="export-dl">Download spreadsheet</button></div>
+    <p class="muted small" style="margin:8px 0 0">${v.exportedAt?`Last exported ${esc(fmtDate(new Date(v.exportedAt)))}${v.updated>v.exportedAt?" — changed since":""}`:"Not exported yet"}</p></div>`;
+  h += `<h2>Other</h2><div class="row"><button class="btn" data-act="next-visit">Start next visit with these locations</button><button class="btn danger" data-act="del-visit">Delete this visit</button></div>`;
+  $("#app").innerHTML = h;
+  const inp=$("#addLoc"); inp.addEventListener("keydown",e=>{ if(e.key==="Enter"){ e.preventDefault(); addLocations(v); } });
+}
+
+function renderDetails(v){
+  cur={visit:v,obj:v,kind:"details"};
+  bar("Visit details", `#/v/${v.id}`);
+  const t = (k,label,attrs="") => `<div class="field wide"><label for="f_${k}">${label}</label><input id="f_${k}" data-k="${k}" type="text" value="${esc(v[k])}" ${attrs}></div>`;
+  let h = `<div class="panel"><div class="grid">
+    ${t("project","Project number",'inputmode="text" autocomplete="off"')}
+    ${t("site","Site",'autocomplete="off"')}
+    <div class="field wide"><label for="f_datetime">Date and time of monitoring</label><input id="f_datetime" data-k="datetime" type="datetime-local" value="${esc(v.datetime)}"></div>
+    ${t("by","Fieldwork by",'autocomplete="name"')}
+    <div class="field wide"><label>Visit number</label>${segHTML("visitNo",VISIT_NOS,v.visitNo)}</div>
+    <div class="field wide"><label>Instrument</label>${segHTML("instrument",INSTRUMENTS,v.instrument)}</div>
+    <div class="field wide" id="instOther" ${v.instrument==="Other"?"":"hidden"}><label for="f_instrumentOther">Other instrument</label><input id="f_instrumentOther" data-k="instrumentOther" type="text" value="${esc(v.instrumentOther)}"></div>
+  </div></div>
+  <h2>Weather</h2><div class="panel"><div class="grid">
+    ${WEATHER.map(w=>`<div class="field wide">${segHTML(w.k,w.opts,v[w.k])}</div>`).join("")}
+    <div class="field wide"><label for="f_recentWeather">Recent weather <span class="unit">precipitation, wind speed etc.</span></label><textarea id="f_recentWeather" data-k="recentWeather" rows="3">${esc(v.recentWeather)}</textarea></div>
+    <div class="field"><label for="f_airTemp">Air temp <span class="unit">°C</span></label><input id="f_airTemp" data-k="airTemp" type="text" inputmode="decimal" value="${esc(v.airTemp)}"></div>
+    <div class="field wide"><label>Readings relative to</label>${segHTML("relativeTo",["Ground level","Top of pipe"],v.relativeTo)}</div>
+  </div></div>`;
+  $("#app").innerHTML = h;
+}
+
+function renderFresh(v){
+  cur={visit:v,obj:v.freshAir,kind:"fresh"};
+  bar("Fresh air", `#/v/${v.id}`);
+  $("#app").innerHTML = `<p class="muted small">Background readings taken in open air before monitoring.</p><div class="panel"><div class="grid">${FRESH_FIELDS.map(f=>fieldHTML(f,v.freshAir)).join("")}</div></div>
+    <div style="margin-top:14px"><a class="btn block" href="#/v/${v.id}">Done</a></div>`;
+  paintWarnings();
+}
+
+function renderLoc(v, l){
+  cur={visit:v,obj:l,kind:"loc"};
+  bar(l.name, `#/v/${v.id}`);
+  const i = v.locations.indexOf(l), prev=v.locations[i-1], next=v.locations[i+1];
+  let h = `<div class="panel"><div class="grid">
+    <div class="field wide"><label for="f_name">Location</label><input id="f_name" data-k="name" type="text" value="${esc(l.name)}" autocapitalize="characters" autocomplete="off"></div>`;
+  for(const g of LOC_GROUPS){
+    h += `<div class="group-title">${esc(g.title)}${g.unit?` <span class="unit">${esc(g.unit)}</span>`:""}</div>`;
+    h += g.fields.map(f=>fieldHTML(g.unit?{...f}:f, l)).join("");
+  }
+  h += `<div class="group-title">Notes</div><div class="field wide"><label for="f_notes" class="muted small" style="font-weight:500">Damage to tap, well or cover, open tap, pressure change, flow variation, anything else that could affect results.</label>
+    <textarea id="f_notes" data-k="notes" rows="4">${esc(l.notes)}</textarea></div>`;
+  h += `</div></div><div style="margin-top:18px"><button class="btn danger block" data-act="del-loc">Delete ${esc(l.name)}</button></div>`;
+  $("#app").innerHTML = h + `<nav class="footer-nav">
+    <button class="btn" data-act="go" data-href="${prev?`#/v/${v.id}/l/${prev.id}`:""}" ${prev?"":"disabled"}>‹ ${prev?esc(prev.name):"Previous"}</button>
+    <button class="btn primary" data-act="go" data-href="${next?`#/v/${v.id}/l/${next.id}`:`#/v/${v.id}`}">${next?esc(next.name)+" ›":"All locations"}</button></nav>`;
+  paintWarnings();
+}
+
+/* ---------- Actions ---------- */
+function newVisit(base){
+  const v = {id:uid(), created:Date.now(), updated:Date.now(), project:"", site:"", datetime:nowLocal(), by:"", visitNo:"", instrument:"", instrumentOther:"",
+    temp:"", sky:"", wet:"", wind:"", recentWeather:"", airTemp:"", relativeTo:"", freshAir:{}, locations:[], exportedAt:null};
+  if(base){
+    for(const k of ["project","site","by","instrument","instrumentOther","relativeTo"]) v[k]=base[k];
+    const i=VISIT_NOS.indexOf(base.visitNo); v.visitNo = i>=0&&i<VISIT_NOS.length-1 ? VISIT_NOS[i+1] : "";
+    v.locations = base.locations.map(l=>({id:uid(), name:l.name}));
+  }
+  db.visits[v.id]=v; saveNow(); return v;
+}
+function addLocations(v){
+  const inp=$("#addLoc"); const names=inp.value.split(/[,;\n]+/).map(s=>s.trim()).filter(Boolean);
+  if(!names.length){ inp.focus(); return; }
+  const have=new Set(v.locations.map(l=>l.name.toLowerCase())); const skipped=[];
+  for(const n of names){ if(have.has(n.toLowerCase())){ skipped.push(n); continue; } have.add(n.toLowerCase()); v.locations.push({id:uid(), name:n}); }
+  touch(v); saveNow(); renderVisit(v);
+  if(skipped.length) toast(`Already added: ${skipped.join(", ")}`);
+  else toast(`Added ${names.length} location${names.length===1?"":"s"}`);
+}
+function cellVal(v){ if(!filled(v)) return ""; return isNum(v) ? parseFloat(v) : String(v).trim(); }
+function buildWorkbook(v){
+  const inst = v.instrument==="Other" ? (v.instrumentOther||"Other") : v.instrument;
+  const weather = WEATHER.map(w=>v[w.k]).filter(filled).join(", ");
+  const cols = ["Location","Atmospheric pressure (mb)","Flow peak (l/hr)","Flow steady (l/hr)","CH4 peak (% v/v)","CH4 steady (% v/v)","CO2 peak (% v/v)","CO2 steady (% v/v)","Min O2 (% v/v)","H2S (ppm)","CO (ppm)","VOCs / PID (ppm)","Monitoring duration (mins)","Pipe/casing height (m)","Depth to water (m)","Depth to base of well (m)","Notes"];
+  const fa = v.freshAir||{};
+  const freshRow = ["Fresh air","","","",cellVal(fa.ch4),"",cellVal(fa.co2),"",cellVal(fa.o2),cellVal(fa.h2s),cellVal(fa.co),cellVal(fa.voc),"","","","",""];
+  const locRows = v.locations.map(l=>[l.name, ...LOC_FIELDS.map(f=>cellVal(l[f.k])), l.notes||""]);
+  const header = [["GAS AND GROUNDWATER MONITORING RECORD"],[],
+    ["Project number",v.project||""],["Site",v.site||""],["Date / time",fmtDate(v.datetime)],["Visit number",v.visitNo||""],["Fieldwork by",v.by||""],
+    ["Instrument",inst||""],["Weather",weather],["Recent weather",v.recentWeather||""],["Air temp (°C)",cellVal(v.airTemp)],["Readings relative to",v.relativeTo||""],[]];
+  const ws1 = XLSX.utils.aoa_to_sheet([...header, cols, freshRow, ...locRows]);
+  ws1["!cols"] = [{wch:22},...cols.slice(1,-1).map(()=>({wch:13})),{wch:50}];
+  const flatCols = ["Project number","Site","Visit number","Date / time","Fieldwork by","Instrument","Weather","Air temp (°C)","Readings relative to",...cols];
+  const meta = [v.project||"",v.site||"",v.visitNo||"",v.datetime||"",v.by||"",inst||"",weather,cellVal(v.airTemp),v.relativeTo||""];
+  const ws2 = XLSX.utils.aoa_to_sheet([flatCols, [...meta,...freshRow], ...locRows.map(r=>[...meta,...r])]);
+  ws2["!cols"] = flatCols.map(c=>({wch:Math.max(12,Math.min(30,c.length+2))}));
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws1, "Field sheet");
+  XLSX.utils.book_append_sheet(wb, ws2, "Data");
+  return wb;
+}
+function fileName(v){
+  const d=(v.datetime||"").slice(0,10)||"undated";
+  const parts=[v.project||"project", v.site, v.visitNo?("visit-"+v.visitNo):"", d].filter(filled).join("_");
+  return parts.replace(/[^\w.\-]+/g,"-").replace(/-+/g,"-") + ".xlsx";
+}
+async function exportVisit(v, mode){
+  if(!window.XLSX){ toast("Spreadsheet export isn't loaded. Open the page once with signal, then try again."); return; }
+  saveNow();
+  const out = XLSX.write(buildWorkbook(v), {bookType:"xlsx", type:"array"});
+  const type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", name=fileName(v);
+  const blob = new Blob([out],{type});
+  if(mode==="share"){
+    const file = new File([blob], name, {type});
+    if(navigator.canShare && navigator.canShare({files:[file]})){
+      try{ await navigator.share({files:[file], title:name}); markExported(v); return; }
+      catch(e){ if(e && e.name==="AbortError"){ toast("Share cancelled. Nothing was exported."); return; } }
+    }
+    toast("Sharing files isn't supported here, so it's downloading instead.");
+  }
+  const a=document.createElement("a"); a.href=URL.createObjectURL(blob); a.download=name; document.body.appendChild(a); a.click();
+  setTimeout(()=>{ URL.revokeObjectURL(a.href); a.remove(); }, 4000);
+  markExported(v);
+}
+function markExported(v){ v.exportedAt = Date.now(); if(v.updated>v.exportedAt) v.exportedAt=v.updated; saveNow(); renderVisit(v); toast("Exported "+fileName(v)); }
+
+/* ---------- Events ---------- */
+document.addEventListener("input", e=>{
+  const k = e.target.dataset && e.target.dataset.k; if(!k || !cur.obj) return;
+  cur.obj[k] = e.target.value;
+  if(cur.kind==="loc" && k==="name"){ const h=$("#bar h1"); if(h) h.textContent=e.target.value||"Unnamed"; }
+  touch(cur.visit); paintStatus(); paintWarnings();
+});
+document.addEventListener("change", e=>{ if(e.target.dataset && e.target.dataset.k) saveNow(); });
+document.addEventListener("keydown", e=>{
+  if(e.key!=="Enter" || !e.target.matches("input[data-k]")) return;
+  e.preventDefault(); const ins=[...document.querySelectorAll("main input[data-k], main textarea[data-k]")]; const i=ins.indexOf(e.target);
+  if(ins[i+1]) ins[i+1].focus(); else e.target.blur();
+});
+document.addEventListener("click", e=>{
+  const chip = e.target.closest(".chip");
+  if(chip && cur.obj){ const k=chip.dataset.for, inp=$("#f_"+k); cur.obj[k]=chip.dataset.chip; inp.value=chip.dataset.chip; touch(cur.visit); saveNow(); paintWarnings(); return; }
+  const segBtn = e.target.closest(".seg button");
+  if(segBtn && cur.obj){ const seg=segBtn.parentElement, k=seg.dataset.set, val=segBtn.dataset.val;
+    cur.obj[k] = cur.obj[k]===val ? "" : val;
+    seg.querySelectorAll("button").forEach(b=>b.setAttribute("aria-pressed", String(b.dataset.val===cur.obj[k])));
+    if(k==="instrument"){ const o=$("#instOther"); if(o) o.hidden = cur.obj[k]!=="Other"; }
+    touch(cur.visit); saveNow(); return; }
+  const btn = e.target.closest("[data-act]"); if(!btn) return;
+  const act = btn.dataset.act, v = cur.visit;
+  if(act==="go"){ if(btn.dataset.href) location.hash = btn.dataset.href; }
+  else if(act==="new-visit"){ const nv=newVisit(); location.hash=`#/v/${nv.id}/details`; }
+  else if(act==="add-loc"){ addLocations(v); }
+  else if(act==="export-share"){ exportVisit(v,"share"); }
+  else if(act==="export-dl"){ exportVisit(v,"download"); }
+  else if(act==="next-visit"){ const nv=newVisit(v); location.hash=`#/v/${nv.id}/details`; toast("New visit started with the same locations"); }
+  else if(act==="del-loc"){ const l=cur.obj; if(confirm(`Delete ${l.name} and all its readings?`)){ v.locations=v.locations.filter(x=>x!==l); touch(v); saveNow(); location.hash=`#/v/${v.id}`; } }
+  else if(act==="del-visit"){
+    const warn = (!v.exportedAt || v.updated>v.exportedAt) ? "\n\nThis visit has changes that haven't been exported." : "";
+    if(confirm(`Delete this visit from this phone?${warn}`)){ delete db.visits[v.id]; saveNow(); location.hash="#/"; } }
+});
+
+/* ---------- Router ---------- */
+function route(){
+  const p = (location.hash.slice(1)||"/").split("/").filter(Boolean);
+  window.scrollTo(0,0);
+  if(p[0]==="v" && db.visits[p[1]]){
+    const v=db.visits[p[1]]; v.freshAir = v.freshAir||{};
+    if(p[2]==="l"){ const l=v.locations.find(x=>x.id===p[3]); if(l) return renderLoc(v,l); }
+    if(p[2]==="fresh") return renderFresh(v);
+    if(p[2]==="details") return renderDetails(v);
+    return renderVisit(v);
+  }
+  renderHome();
+}
+window.addEventListener("hashchange", route);
+window.addEventListener("storage", e=>{ if(e.key===KEY){ db=load(); route(); } });
+route();
+
+if("serviceWorker" in navigator && location.protocol==="https:"){
+  window.addEventListener("load", ()=>navigator.serviceWorker.register("sw.js").catch(()=>{}));
+}
+</script>
+</body>
+</html>
