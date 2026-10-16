@@ -2,7 +2,7 @@
 // The page itself: fetched fresh when there's signal (3 s limit), otherwise served from the phone.
 // Other files: served from the phone, refreshed in the background.
 // To release an update: change CACHE here AND APP_VERSION in index.html.
-const CACHE = "gasfield-2.0";
+const CACHE = "gasfield-2.1";
 const ASSETS = ["./", "./index.html", "./xlsx.full.min.js", "./firebase.js", "./manifest.webmanifest",
                 "./icon-192.png", "./icon-512.png", "./apple-touch-icon.png"];
 

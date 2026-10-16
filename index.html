@@ -158,7 +158,7 @@ button:focus-visible,a:focus-visible{outline:3px solid var(--hv);outline-offset:
 <script src="firebase.js"></script>
 <script>
 "use strict";
-const APP_VERSION = "2.0"; // keep in step with CACHE in sw.js
+const APP_VERSION = "2.1"; // keep in step with CACHE in sw.js
 
 /* ---------- Settings ---------- */
 const FIREBASE_CONFIG = {
@@ -235,6 +235,7 @@ let loaded = {projects:false, visits:false};
 let pendingRemote = {projects:false, visits:false};
 let syncError = "";
 let unsubs = [];
+let tokenRetried = false;
 
 function startFirebase(){
   if(!window.FB){ renderFatal("The app's database code didn't load. Open it once with signal."); return; }
@@ -252,7 +253,13 @@ function startFirebase(){
 }
 function stopListeners(){ unsubs.forEach(f=>f()); unsubs=[]; projects.clear(); visits.clear(); loaded={projects:false,visits:false}; }
 function startListeners(){
-  const onErr = e => { syncError = e && e.code==="permission-denied" ? "This account doesn't have access to the database." : "Sync problem: " + (e && (e.code||e.message)); paintStatus(); route(); };
+  const onErr = async e => {
+    if(e && e.code==="permission-denied" && !tokenRetried && user){ tokenRetried = true; try{ await user.getIdToken(true); }catch(_){} stopListeners(); startListeners(); return; }
+    syncError = e && e.code==="permission-denied"
+      ? `The database refused access for ${user && user.email} (email confirmed: ${user && user.emailVerified ? "yes" : "no"}). Check the Firestore rules are published and include this address. Don't enter real readings until this says Synced.`
+      : "Sync problem: " + (e && (e.code||e.message));
+    paintStatus(); route();
+  };
   unsubs.push(FB.onSnapshot(FB.collection(fdb,"projects"), {includeMetadataChanges:true}, snap => {
     projects.clear(); snap.forEach(d => projects.set(d.id, {...d.data(), id:d.id}));
     reapplyPending("projects", projects);
@@ -267,12 +274,29 @@ function startListeners(){
 
 /* Edits are applied to memory straight away and written to Firestore after a short pause.
    Firestore saves them on the phone first and sends them when there's signal. */
+/* Backup: a copy of every record this phone creates or edits, kept in phone storage.
+   If the database ever rejects or loses a change, it can be restored from here. */
+const BACKUP_KEY = "gasfield.backup";
+let backup = (()=>{ try{ const b=JSON.parse(localStorage.getItem(BACKUP_KEY)||"null"); if(b&&b.projects&&b.visits) return b; }catch(e){} return {projects:{},visits:{}}; })();
+let backupTimer = null;
+function markBackup(col, id){
+  const o = (col==="projects"?projects:visits).get(id); if(!o) return;
+  const c = JSON.parse(JSON.stringify(o)); delete c.createdAt; delete c.updatedAt; c.id = id;
+  backup[col][id] = c; clearTimeout(backupTimer); backupTimer = setTimeout(saveBackup, 300);
+}
+function saveBackup(){ clearTimeout(backupTimer); backupTimer=null; try{ localStorage.setItem(BACKUP_KEY, JSON.stringify(backup)); }catch(e){} }
+function lostRecords(){
+  if(!loaded.projects || !loaded.visits || syncError || pend.size || pendingRemote.projects || pendingRemote.visits) return {projects:[], visits:[]};
+  return { projects: Object.values(backup.projects).filter(b=>!projects.has(b.id)),
+           visits: Object.values(backup.visits).filter(b=>!b.deleted && !visits.has(b.id)) };
+}
 const pend = new Map(); // "col/id" -> {col,id,fields}
 let flushTimer = null;
 function queueUpdate(col, id, path, value){
   const key = col+"/"+id;
   if(!pend.has(key)) pend.set(key, {col, id, fields:{}});
   pend.get(key).fields[path] = value;
+  markBackup(col, id);
   clearTimeout(flushTimer); flushTimer = setTimeout(flush, 400);
   paintStatus();
 }
@@ -286,13 +310,14 @@ function flush(){
   }
   paintStatus();
 }
-window.addEventListener("pagehide", flush);
+window.addEventListener("pagehide", ()=>{ flush(); saveBackup(); });
 document.addEventListener("visibilitychange", ()=>{ if(document.hidden) flush(); });
 window.addEventListener("online", paintStatus); window.addEventListener("offline", paintStatus);
 function createDoc(col, id, data){
   const full = {...data, createdAt:FB.serverTimestamp(), createdBy:user.email, updatedAt:FB.serverTimestamp(), updatedBy:user.email};
   const local = {...data, id, createdBy:user.email, updatedBy:user.email};
   (col==="projects"?projects:visits).set(id, local);
+  markBackup(col, id);
   FB.setDoc(FB.doc(fdb, col, id), full, {merge:true}).catch(e => { syncError = "Couldn't save: " + (e.code||e.message); paintStatus(); });
   return local;
 }
@@ -417,7 +442,7 @@ function refreshForm(){
     const v = el.dataset.k==="name" && cur.kind==="loc" ? ((curProject()||projects.get(curVisit().projectNum)).locations[cur.locId]||{}).name : o[el.dataset.k];
     if((el.value||"") !== String(v??"")) el.value = v ?? "";
   });
-  document.querySelectorAll("main .seg").forEach(seg=>{ const val=o[seg.dataset.set]; seg.querySelectorAll("button").forEach(b=>b.setAttribute("aria-pressed", String(b.dataset.val===val))); });
+  document.querySelectorAll("main .seg").forEach(seg=>{ const val=o[seg.dataset.set] || (seg.dataset.set==="status"?"Monitored":""); seg.querySelectorAll("button").forEach(b=>b.setAttribute("aria-pressed", String(b.dataset.val===val))); });
   paintWarnings();
 }
 function onData(){
@@ -501,6 +526,7 @@ function renderHome(){
   h += `<div class="addrow" style="margin:6px 0 4px"><input type="text" id="search" placeholder="Search project number or site" value="${esc(homeSearch)}" autocomplete="off" aria-label="Search projects"></div>`;
   h += `<div id="plist">${projectListHTML()}</div>`;
   h += `<div style="margin-top:16px"><a class="btn primary block" href="#/newproject">New project</a></div>`;
+  if(!legacy.length && legacyAll().length) h += `<p class="muted small version" style="margin-top:18px"><button class="linkbtn" data-act="reset-imported">File visits from the previous version again</button></p>`;
   h += `<p class="muted small version">Signed in as ${esc(user.displayName||user.email)} · <button class="linkbtn" data-act="sign-out">Sign out</button><br>Version ${APP_VERSION}</p>`;
   $("#app").innerHTML = h;
   $("#search").addEventListener("input", e=>{ homeSearch=e.target.value; $("#plist").innerHTML=projectListHTML(); });
@@ -514,7 +540,10 @@ function projectListHTML(){
   const item = p => { const vs=projVisits(p.id), last=vs[vs.length-1];
     return `<a class="item" href="#/p/${p.id}"><span class="tag">${esc(p.fullNo)}</span><div class="main"><div class="title">${esc(p.site||"No site name")}</div>
       <div class="sub">${vs.length} visit${vs.length===1?"":"s"}${last?` · last ${esc(fmtDate(last.datetime,false))}`:""}</div></div><span class="chev">›</span></a>`; };
-  let h = `<h2>${q?"Matching projects":"Ongoing projects"}</h2>`;
+  let h = "";
+  const lost = lostRecords(), nLost = lost.projects.length + lost.visits.length;
+  if(nLost) h += `<a class="item" href="#/restore" style="border-color:var(--warn);margin-top:8px"><div class="main"><div class="title">${nLost} record${nLost===1?"":"s"} saved on this phone ${nLost===1?"isn't":"aren't"} in the database</div><div class="sub">Tap to restore them.</div></div><span class="chev">›</span></a>`;
+  h += `<h2>${q?"Matching projects":"Ongoing projects"}</h2>`;
   h += live.length ? `<div class="list">${live.sort(sortFn).map(item).join("")}</div>` : `<div class="panel empty"><p class="muted">${q?"No ongoing projects match.":"No ongoing projects."}</p></div>`;
   if(done.length){
     h += `<button class="btn block" style="margin-top:14px" data-act="toggle-completed">${showCompleted?"Hide":"Show"} completed projects (${done.length})</button>`;
@@ -693,6 +722,7 @@ function renderLoc(v, locId){
   for(const g of LOC_GROUPS){
     h += `<div class="group-title">${esc(g.title)}${g.unit?` <span class="unit">${esc(g.unit)}</span>`:""}</div>`;
     h += g.fields.map(f=>fieldHTML(f, r, prevValue(v, locId, f.k))).join("");
+    if(g.title==="Atmospheric pressure") h += `<div class="field wide"><label>Pressure during monitoring</label>${segHTML("pressureTrend",["Rising","Steady","Falling"],r.pressureTrend)}</div>`;
   }
   h += `</div><div class="group-title">Notes</div><div class="field wide"><label for="f_notes" class="muted small" style="font-weight:500">Damage to tap, well or cover, open tap, pressure change, flow variation, anything else that could affect results.</label>
     <textarea id="f_notes" data-k="notes" rows="4">${esc(r.notes)}</textarea></div>`;
@@ -706,6 +736,7 @@ function renderLoc(v, locId){
 
 /* ---------- Visits from the previous version ---------- */
 const LEGACY_KEY = "gasfield.v1", IMPORTED_KEY = "gasfield.imported";
+function legacyAll(){ try{ const d=JSON.parse(localStorage.getItem(LEGACY_KEY)||"null"); return d && d.visits ? Object.values(d.visits) : []; }catch(e){ return []; } }
 function legacyVisits(){
   try{ const d=JSON.parse(localStorage.getItem(LEGACY_KEY)||"null"); const done=new Set(JSON.parse(localStorage.getItem(IMPORTED_KEY)||"[]"));
     return d && d.visits ? Object.values(d.visits).filter(v=>!done.has(v.id)) : []; }catch(e){ return []; }
@@ -718,6 +749,26 @@ function renderImport(){
   $("#app").innerHTML = `<p class="small">These were entered before projects existed and are only on this phone. Enter the full project number for each to file it and sync it. The original stays on this phone as a backup.</p>
     <div class="list">${list.map(v=>`<div class="panel"><p><strong>${esc([v.project,v.site].filter(filled).join(" ")||"Untitled visit")}</strong>${v.visitNo?` · ${esc(v.visitNo)} visit`:""}<br><span class="muted small">${esc(fmtDate(v.datetime))} · ${(v.locations||[]).length} locations</span></p>
       <div class="addrow"><input type="text" id="imp_${v.id}" value="${esc(normProject(v.project))}" placeholder="e.g. 10171,GI" autocapitalize="characters" autocomplete="off" autocorrect="off" spellcheck="false" aria-label="Full project number"><button class="btn hv" data-act="do-import" data-id="${v.id}">File</button></div><p class="warn" id="imperr_${v.id}"></p></div>`).join("")}</div>`;
+}
+function renderRestore(){
+  cur={kind:"import"};
+  bar("Restore from phone", "#/");
+  const lost = lostRecords();
+  if(!lost.projects.length && !lost.visits.length){ $("#app").innerHTML=`<div class="panel empty"><p>Everything saved on this phone is in the database.</p></div>`; return; }
+  const pName = n => (projects.get(n)||backup.projects[n]||{}).fullNo || n;
+  $("#app").innerHTML = `<p class="small">These were saved on this phone but aren't in the database. That usually means the database refused them, for example while access wasn't set up. If someone deleted a visit on another phone, it can also show here.</p>
+    <div class="panel"><ul style="margin:0;padding-left:20px">${lost.projects.map(b=>`<li>Project ${esc(b.fullNo)} ${esc(b.site||"")}</li>`).join("")}${lost.visits.map(b=>`<li>${esc(pName(b.projectNum))} · ${esc(b.visitNo||"?")} visit · ${esc(fmtDate(b.datetime))}</li>`).join("")}</ul></div>
+    <div class="row" style="margin-top:14px"><button class="btn primary" data-act="do-restore">Restore to database</button><button class="btn" data-act="forget-lost">Clear this list</button></div>`;
+}
+function restoreLost(){
+  const lost = lostRecords(); const strip = b => { const c={...b}; delete c.id; return c; };
+  for(const b of lost.projects){ projects.set(b.id, b); FB.setDoc(FB.doc(fdb,"projects",b.id), {...strip(b), updatedAt:FB.serverTimestamp(), updatedBy:user.email}, {merge:true}).catch(e=>{ syncError="Couldn't restore: "+(e.code||e.message); paintStatus(); }); }
+  for(const b of lost.visits){ visits.set(b.id, b); FB.setDoc(FB.doc(fdb,"visits",b.id), {...strip(b), deleted:false, updatedAt:FB.serverTimestamp(), updatedBy:user.email}, {merge:true}).catch(e=>{ syncError="Couldn't restore: "+(e.code||e.message); paintStatus(); }); }
+  toast(`Restoring ${lost.projects.length+lost.visits.length} records`); location.hash="#/";
+}
+function forgetLost(){
+  if(!confirm("Remove these from the list? They won't be restored.")) return;
+  const lost = lostRecords(); lost.projects.forEach(b=>delete backup.projects[b.id]); lost.visits.forEach(b=>delete backup.visits[b.id]); saveBackup(); location.hash="#/";
 }
 function importLegacy(id){
   const old = legacyVisits().find(v=>v.id===id); if(!old) return;
@@ -744,11 +795,11 @@ function safeName(s){ return String(s||"").replace(/,/g,"-").replace(/[^\w.\-]+/
 function weatherText(v){ return WEATHER.map(w=>v[w.k]).filter(filled).join(", "); }
 function instText(v){ return v.instrument==="Other" ? (v.instrumentOther||"Other") : (v.instrument||""); }
 const XLSX_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
-const DATA_COLS = ["Location","Status","Atmospheric pressure (mb)","Flow peak (l/hr)","Flow steady (l/hr)","CH4 peak (% v/v)","CH4 steady (% v/v)","CO2 peak (% v/v)","CO2 steady (% v/v)","Min O2 (% v/v)","H2S (ppm)","CO (ppm)","VOCs / PID (ppm)","Monitoring duration (mins)","Pipe/casing height (m)","Depth to water (m)","Depth to base of well (m)","Notes"];
+const DATA_COLS = ["Location","Status","Atmospheric pressure (mb)","Pressure trend","Flow peak (l/hr)","Flow steady (l/hr)","CH4 peak (% v/v)","CH4 steady (% v/v)","CO2 peak (% v/v)","CO2 steady (% v/v)","Min O2 (% v/v)","H2S (ppm)","CO (ppm)","VOCs / PID (ppm)","Monitoring duration (mins)","Pipe/casing height (m)","Depth to water (m)","Depth to base of well (m)","Notes"];
 const META_COLS = ["Project number","Site","Visit number","Date / time","Fieldwork by","Instrument","Weather","Air temp (°C)","Readings relative to"];
 function visitMeta(v, p){ return [p.fullNo, p.site||"", v.visitNo||"", v.datetime||"", v.by||"", instText(v), weatherText(v), cellVal(v.airTemp), v.relativeTo||""]; }
-function freshRow(v){ const fa=v.freshAir||{}; return ["Fresh air","","","","",cellVal(fa.ch4),"",cellVal(fa.co2),"",cellVal(fa.o2),cellVal(fa.h2s),cellVal(fa.co),cellVal(fa.voc),"","","","",""]; }
-function locRow(name, r){ return [name, r.status&&r.status!=="Monitored"?r.status:"", ...LOC_FIELDS.map(f=>cellVal(r[f.k])), r.notes||""]; }
+function freshRow(v){ const fa=v.freshAir||{}; return ["Fresh air","","","","","",cellVal(fa.ch4),"",cellVal(fa.co2),"",cellVal(fa.o2),cellVal(fa.h2s),cellVal(fa.co),cellVal(fa.voc),"","","","",""]; }
+function locRow(name, r){ const vals=LOC_FIELDS.map(f=>cellVal(r[f.k])); return [name, r.status&&r.status!=="Monitored"?r.status:"", vals[0], r.pressureTrend||"", ...vals.slice(1), r.notes||""]; }
 function dataSheet(rows){ const ws=XLSX.utils.aoa_to_sheet([[...META_COLS,...DATA_COLS], ...rows]); ws["!cols"]=[...META_COLS,...DATA_COLS].map(c=>({wch:Math.max(12,Math.min(30,c.length+2))})); return ws; }
 function buildVisitWorkbook(v, p){
   const header = [["GAS AND GROUNDWATER MONITORING RECORD"],[],
@@ -769,18 +820,20 @@ function buildProjectWorkbook(p){
   const insts = [...new Set(vs.map(instText).filter(filled))].join("; ");
   for(const l of projLocs(p)){
     const aoa = [["GROUND GAS AND GROUNDWATER MONITORING DATA"],["Project Number:",p.fullNo],["Project Name:",p.site||"","","Date:",toDate(new Date())],["Exploratory Hole Location",l.name],[],
-      ["Return Visit #","Monitoring Date","Atmospheric Pressure (mb)","Methane (% v/v)","Methane (% LEL)","Carbon Dioxide (% v/v)","Oxygen (% v/v)","Flow Rate (l/hr)","H2S (ppm)","CO (ppm)","VOC (ppm)","Water Level (m)","Base of Well (m)","Weather Conditions","Comments / Pressure Rise or Fall"]];
-    let lastP = null;
+      ["Return Visit #","Monitoring Date","Atmospheric Pressure (mb)","Methane (% v/v)","Methane (% LEL)","Carbon Dioxide (% v/v)","Oxygen (% v/v)","Flow Rate (l/hr)","H2S (ppm)","CO (ppm)","VOC (ppm)","Water Level (mbgl)","Base of Well (mbgl)","Weather Conditions","Comments / Pressure Rise or Fall"]];
     for(const v of vs){
-      const r = reading(v, l.id), skipped = r.status && r.status!=="Monitored", pr = num(r.pressure);
+      const r = reading(v, l.id), skipped = r.status && r.status!=="Monitored";
       const comments = [];
       if(skipped) comments.push(r.status);
-      if(pr!==null && lastP!==null && pr<lastP) comments.push("Falling pressure");
-      if(v.relativeTo==="Top of pipe") comments.push("Depths from top of pipe");
+      if(r.pressureTrend==="Falling") comments.push("Falling pressure");
+      if(r.pressureTrend==="Rising") comments.push("Rising pressure");
+      // Readings taken from top of pipe are converted to below ground level by taking off the pipe height.
+      const fromTop = v.relativeTo==="Top of pipe", ph = num(r.pipeHeight);
+      const bgl = val => { if(!fromTop) return cellVal(val); const d=num(val); return (d===null||ph===null) ? cellVal(val) : Math.round((d-ph)*100)/100; };
+      if(fromTop && ph===null && (isNum(r.depthWater)||isNum(r.depthBase))) comments.push("Depths from top of pipe (no pipe height recorded)");
       if(filled(r.notes)) comments.push(r.notes.trim());
       aoa.push([(v.visitNo||"?")+" visit", toDate(v.datetime), skipped?"":cellVal(r.pressure), skipped?"":cellVal(r.ch4Peak), skipped?"":lel(r.ch4Peak), skipped?"":cellVal(r.co2Peak), skipped?"":cellVal(r.o2Min), skipped?"":cellVal(r.flowPeak),
-        skipped?"":cellVal(r.h2s), skipped?"":cellVal(r.co), skipped?"":cellVal(r.voc), skipped?"":cellVal(r.depthWater), skipped?"":cellVal(r.depthBase), weatherText(v), comments.join(". ")]);
-      if(pr!==null) lastP = pr;
+        skipped?"":cellVal(r.h2s), skipped?"":cellVal(r.co), skipped?"":cellVal(r.voc), skipped?"":bgl(r.depthWater), skipped?"":bgl(r.depthBase), weatherText(v), comments.join(". ")]);
       allRows.push([...visitMeta(v,p), ...locRow(l.name, r)]);
     }
     aoa.push([],["Instruments Used:",insts],["Methane, carbon dioxide and flow are peak readings. nm = not measured."]);
@@ -882,6 +935,9 @@ document.addEventListener("click", e=>{
   else if(act==="export-visit") exportVisit(v, btn.dataset.mode);
   else if(act==="export-project") exportProject(p, btn.dataset.mode);
   else if(act==="do-import") importLegacy(btn.dataset.id);
+  else if(act==="do-restore") restoreLost();
+  else if(act==="forget-lost") forgetLost();
+  else if(act==="reset-imported"){ try{ localStorage.removeItem(IMPORTED_KEY); }catch(e){} location.hash="#/import"; }
 });
 
 /* ---------- Slide to confirm ---------- */
@@ -892,7 +948,7 @@ function slideDone(act){
     p.locations[cur.locId].removed = true; queueUpdate("projects", p.id, `locations.${cur.locId}.removed`, true); flush();
     location.hash = `#/v/${v.id}`; toast(`Removed ${name} from the project`);
   } else if(act==="del-visit"){
-    v.deleted = true; queueUpdate("visits", v.id, "deleted", true); flush(); visits.delete(v.id);
+    v.deleted = true; queueUpdate("visits", v.id, "deleted", true); flush(); saveBackup(); visits.delete(v.id);
     location.hash = `#/p/${v.projectNum}`; toast("Visit deleted");
   }
   return true;
@@ -932,6 +988,7 @@ function route(keepScroll){
   const ready = loaded.projects && loaded.visits;
   if(p[0]==="newproject") renderNewProject();
   else if(p[0]==="import") renderImport();
+  else if(p[0]==="restore") renderRestore();
   else if(ready && p[0]==="p" && projects.has(p[1])){ const pr=projects.get(p[1]); p[2]==="edit" ? renderProjectEdit(pr) : renderProject(pr); }
   else if(ready && p[0]==="v" && visits.has(p[1])){
     const v=visits.get(p[1]);
