@@ -156,9 +156,11 @@ button:focus-visible,a:focus-visible{outline:3px solid var(--hv);outline-offset:
 <div class="toast" id="toast" hidden></div>
 <script src="xlsx.full.min.js"></script>
 <script src="firebase.js"></script>
+<script src="jszip.min.js"></script>
+<script src="ggt012.js"></script>
 <script>
 "use strict";
-const APP_VERSION = "2.1"; // keep in step with CACHE in sw.js
+const APP_VERSION = "2.3"; // keep in step with CACHE in sw.js
 
 /* ---------- Settings ---------- */
 const FIREBASE_CONFIG = {
@@ -183,6 +185,10 @@ const WEATHER = [
   {k:"wind", opts:["Calm","Breezy","Windy","Very windy"]}
 ];
 const LOC_STATUS = ["Monitored","Not accessed","Destroyed"];
+const TRENDS = ["Rising","Steady","Falling"];
+const SEG_DEFAULTS = {status:"Monitored", pressureTrend:"Steady"};
+// Instrument names as written in the GGT012 template's drop-down.
+const INSTRUMENT_TEMPLATE = {"GFM436 / MiniRAE (Yellow)":"GFM436 gas analyser  / PID MiniRAE lite","GFM436 / MultiRAE (Green)":"GFM436 gas analyser  / PID MultiRAE lite"};
 const GAS_CHIPS = ["<0.1","nm"];
 const LOC_GROUPS = [
   {title:"Atmospheric pressure", fields:[{k:"pressure",label:"Pressure",unit:"mb",chips:["nm"]}]},
@@ -442,7 +448,7 @@ function refreshForm(){
     const v = el.dataset.k==="name" && cur.kind==="loc" ? ((curProject()||projects.get(curVisit().projectNum)).locations[cur.locId]||{}).name : o[el.dataset.k];
     if((el.value||"") !== String(v??"")) el.value = v ?? "";
   });
-  document.querySelectorAll("main .seg").forEach(seg=>{ const val=o[seg.dataset.set] || (seg.dataset.set==="status"?"Monitored":""); seg.querySelectorAll("button").forEach(b=>b.setAttribute("aria-pressed", String(b.dataset.val===val))); });
+  document.querySelectorAll("main .seg").forEach(seg=>{ const val=o[seg.dataset.set] || SEG_DEFAULTS[seg.dataset.set] || ""; seg.querySelectorAll("button").forEach(b=>b.setAttribute("aria-pressed", String(b.dataset.val===val))); });
   paintWarnings();
 }
 function onData(){
@@ -600,7 +606,8 @@ function renderProject(p){
   h += `<h2>Monitoring locations</h2><div class="panel"><p class="small">${locs.length ? locs.map(l=>`<span class="tag" style="margin:0 6px 6px 0">${esc(l.name)}</span>`).join("") : `<span class="muted">None yet.</span>`}</p>
     <div class="addrow"><input type="text" id="addLoc" placeholder="e.g. WS01, WS04, BH2" autocapitalize="characters" autocomplete="off" aria-label="Location names" enterkeyhint="done"><button class="btn hv" data-act="add-loc">Add</button></div>
     <p class="muted small" style="margin:6px 0 0">Locations are shared by every visit to this project. Rename or remove one from its reading page.</p></div>`;
-  h += `<h2>Compiled results</h2><div class="panel"><p class="small">One spreadsheet with a sheet per location and a row per visit, in the return visits layout, plus all the raw data.</p>${emailBlock("export-project")}</div>`;
+  h += `<h2>Return visits spreadsheet (GGT012)</h2><div class="panel"><p class="small">Fills the GGT012 template with one tab per location, including the graphs. Project name and date of installation are left to complete by hand.${locs.length>10?` This project has ${locs.length} locations, so it comes as ${Math.ceil(locs.length/10)} files of up to 10 tabs.`:""}</p>${emailBlock("export-ggt")}
+    <button class="btn block" style="margin-top:10px" data-act="export-project" data-mode="download">Download all raw data</button></div>`;
   $("#app").innerHTML = h;
   bindAddLoc(()=>p); bindEmailTo();
 }
@@ -627,7 +634,7 @@ function newVisit(p){
   const vs = projVisits(p.id), last = vs[vs.length-1] || {};
   const id = uid();
   createDoc("visits", id, {projectNum:p.id, visitNo:suggestVisitNo(p.id), datetime:nowLocal(), by:user.displayName||"",
-    instrument:last.instrument||"", instrumentOther:last.instrumentOther||"", relativeTo:last.relativeTo||"",
+    instrument:last.instrument||"", instrumentOther:last.instrumentOther||"", relativeTo:last.relativeTo||"", pressureTrend:"Steady",
     temp:"", sky:"", wet:"", wind:"", recentWeather:"", airTemp:"", freshAir:{}, readings:{}, deleted:false, exportedAt:0});
   location.hash = `#/v/${id}/details`;
 }
@@ -672,6 +679,7 @@ function renderDetails(v){
     <div class="field wide"><label for="f_datetime">Date and time of monitoring</label><input id="f_datetime" data-k="datetime" type="datetime-local" value="${esc(v.datetime)}"></div>
     ${t("by","Fieldwork by",'autocomplete="name"')}
     <div class="field wide"><label>Visit number</label>${segHTML("visitNo",VISIT_NOS,v.visitNo)}<p class="warn" id="w_visitNo">${dup?`Another visit on this project is also marked ${esc(v.visitNo)}.`:""}</p></div>
+    <div class="field wide"><label>Atmospheric pressure during monitoring</label>${segHTML("pressureTrend",TRENDS,v.pressureTrend||"Steady")}</div>
     <div class="field wide"><label>Instrument</label>${segHTML("instrument",INSTRUMENTS,v.instrument)}</div>
     <div class="field wide" id="instOther" ${v.instrument==="Other"?"":"hidden"}><label for="f_instrumentOther">Other instrument</label><input id="f_instrumentOther" data-k="instrumentOther" type="text" value="${esc(v.instrumentOther)}"></div>
   </div></div>
@@ -722,7 +730,6 @@ function renderLoc(v, locId){
   for(const g of LOC_GROUPS){
     h += `<div class="group-title">${esc(g.title)}${g.unit?` <span class="unit">${esc(g.unit)}</span>`:""}</div>`;
     h += g.fields.map(f=>fieldHTML(f, r, prevValue(v, locId, f.k))).join("");
-    if(g.title==="Atmospheric pressure") h += `<div class="field wide"><label>Pressure during monitoring</label>${segHTML("pressureTrend",["Rising","Steady","Falling"],r.pressureTrend)}</div>`;
   }
   h += `</div><div class="group-title">Notes</div><div class="field wide"><label for="f_notes" class="muted small" style="font-weight:500">Damage to tap, well or cover, open tap, pressure change, flow variation, anything else that could affect results.</label>
     <textarea id="f_notes" data-k="notes" rows="4">${esc(r.notes)}</textarea></div>`;
@@ -799,13 +806,13 @@ const DATA_COLS = ["Location","Status","Atmospheric pressure (mb)","Pressure tre
 const META_COLS = ["Project number","Site","Visit number","Date / time","Fieldwork by","Instrument","Weather","Air temp (°C)","Readings relative to"];
 function visitMeta(v, p){ return [p.fullNo, p.site||"", v.visitNo||"", v.datetime||"", v.by||"", instText(v), weatherText(v), cellVal(v.airTemp), v.relativeTo||""]; }
 function freshRow(v){ const fa=v.freshAir||{}; return ["Fresh air","","","","","",cellVal(fa.ch4),"",cellVal(fa.co2),"",cellVal(fa.o2),cellVal(fa.h2s),cellVal(fa.co),cellVal(fa.voc),"","","","",""]; }
-function locRow(name, r){ const vals=LOC_FIELDS.map(f=>cellVal(r[f.k])); return [name, r.status&&r.status!=="Monitored"?r.status:"", vals[0], r.pressureTrend||"", ...vals.slice(1), r.notes||""]; }
+function locRow(name, r, v){ const vals=LOC_FIELDS.map(f=>cellVal(r[f.k])); return [name, r.status&&r.status!=="Monitored"?r.status:"", vals[0], (v&&v.pressureTrend)||"Steady", ...vals.slice(1), r.notes||""]; }
 function dataSheet(rows){ const ws=XLSX.utils.aoa_to_sheet([[...META_COLS,...DATA_COLS], ...rows]); ws["!cols"]=[...META_COLS,...DATA_COLS].map(c=>({wch:Math.max(12,Math.min(30,c.length+2))})); return ws; }
 function buildVisitWorkbook(v, p){
   const header = [["GAS AND GROUNDWATER MONITORING RECORD"],[],
     ["Project number",p.fullNo],["Site",p.site||""],["Date / time",fmtDate(v.datetime)],["Visit number",v.visitNo||""],["Fieldwork by",v.by||""],
     ["Instrument",instText(v)],["Weather",weatherText(v)],["Recent weather",v.recentWeather||""],["Air temp (°C)",cellVal(v.airTemp)],["Readings relative to",v.relativeTo||""],[]];
-  const rows = [freshRow(v), ...projLocs(p).map(l=>locRow(l.name, reading(v,l.id)))];
+  const rows = [freshRow(v), ...projLocs(p).map(l=>locRow(l.name, reading(v,l.id), v))];
   const ws1 = XLSX.utils.aoa_to_sheet([...header, DATA_COLS, ...rows]);
   ws1["!cols"] = [{wch:22},...DATA_COLS.slice(1,-1).map(()=>({wch:13})),{wch:50}];
   const wb = XLSX.utils.book_new();
@@ -825,8 +832,8 @@ function buildProjectWorkbook(p){
       const r = reading(v, l.id), skipped = r.status && r.status!=="Monitored";
       const comments = [];
       if(skipped) comments.push(r.status);
-      if(r.pressureTrend==="Falling") comments.push("Falling pressure");
-      if(r.pressureTrend==="Rising") comments.push("Rising pressure");
+      if(!skipped && v.pressureTrend==="Falling") comments.push("Falling pressure");
+      if(!skipped && v.pressureTrend==="Rising") comments.push("Rising pressure");
       // Readings taken from top of pipe are converted to below ground level by taking off the pipe height.
       const fromTop = v.relativeTo==="Top of pipe", ph = num(r.pipeHeight);
       const bgl = val => { if(!fromTop) return cellVal(val); const d=num(val); return (d===null||ph===null) ? cellVal(val) : Math.round((d-ph)*100)/100; };
@@ -834,7 +841,7 @@ function buildProjectWorkbook(p){
       if(filled(r.notes)) comments.push(r.notes.trim());
       aoa.push([(v.visitNo||"?")+" visit", toDate(v.datetime), skipped?"":cellVal(r.pressure), skipped?"":cellVal(r.ch4Peak), skipped?"":lel(r.ch4Peak), skipped?"":cellVal(r.co2Peak), skipped?"":cellVal(r.o2Min), skipped?"":cellVal(r.flowPeak),
         skipped?"":cellVal(r.h2s), skipped?"":cellVal(r.co), skipped?"":cellVal(r.voc), skipped?"":bgl(r.depthWater), skipped?"":bgl(r.depthBase), weatherText(v), comments.join(". ")]);
-      allRows.push([...visitMeta(v,p), ...locRow(l.name, r)]);
+      allRows.push([...visitMeta(v,p), ...locRow(l.name, r, v)]);
     }
     aoa.push([],["Instruments Used:",insts],["Methane, carbon dioxide and flow are peak readings. nm = not measured."]);
     const ws = XLSX.utils.aoa_to_sheet(aoa, {cellDates:true, dateNF:"dd/mm/yyyy"});
@@ -845,6 +852,65 @@ function buildProjectWorkbook(p){
   vs.forEach(v=>allRows.push([...visitMeta(v,p), ...freshRow(v)]));
   XLSX.utils.book_append_sheet(wb, dataSheet(allRows), "All data");
   return wb;
+}
+function sentenceCase(t){ t=String(t||"").toLowerCase(); return t.charAt(0).toUpperCase()+t.slice(1); }
+function bglValue(v, r, val){ if(v.relativeTo!=="Top of pipe") return cellVal(val); const d=num(val), ph=num(r.pipeHeight); return (d===null||ph===null) ? cellVal(val) : Math.round((d-ph)*100)/100; }
+function excelDate(s){ const d=new Date(s); if(isNaN(d)) return ""; return Math.round((Date.UTC(d.getFullYear(),d.getMonth(),d.getDate()) - Date.UTC(1899,11,30))/86400000); }
+let templateBuf = null;
+async function buildGGT012Files(p){
+  if(!templateBuf){ const res = await fetch("GGT012.xltx"); if(!res.ok) throw new Error("template missing"); templateBuf = await res.arrayBuffer(); }
+  const vs = projVisits(p.id).slice(0,6), locs = projLocs(p);
+  const locData = locs.map(l=>{
+    let waterMax = 0; const remarks = [], insts = new Set();
+    const rows = vs.map(v=>{
+      const r = reading(v,l.id), skipped = r.status && r.status!=="Monitored", label = (v.visitNo||"?")+" visit";
+      insts.add(INSTRUMENT_TEMPLATE[v.instrument] || instText(v));
+      if(filled(r.notes)) remarks.push(`${label}: ${r.notes.trim()}`);
+      if(skipped) return {C:label, D:excelDate(v.datetime), Q:r.status};
+      const c = [];
+      if(v.pressureTrend==="Falling") c.push("Falling pressure");
+      if(v.pressureTrend==="Rising") c.push("Rising pressure");
+      if(v.relativeTo==="Top of pipe" && num(r.pipeHeight)===null && (isNum(r.depthWater)||isNum(r.depthBase))) c.push("Depths from top of pipe (no pipe height)");
+      const N = bglValue(v,r,r.depthWater), O = bglValue(v,r,r.depthBase);
+      [N,O].forEach(x=>{ if(typeof x==="number") waterMax=Math.max(waterMax,x); });
+      // Anything left blank on a monitored visit is written as "nm" (not measured).
+      const nm = x => (x===""||x===null||x===undefined) ? "nm" : x;
+      return {C:label, D:excelDate(v.datetime), E:nm(cellVal(r.pressure)), F:nm(cellVal(r.ch4Peak)), G:nm(lel(r.ch4Peak)), H:nm(cellVal(r.co2Peak)), I:nm(cellVal(r.o2Min)), J:nm(cellVal(r.flowPeak)),
+        K:nm(cellVal(r.h2s)), L:nm(cellVal(r.co)), M:nm(cellVal(r.voc)), N:nm(N), O:nm(O), P:sentenceCase(weatherText(v)), Q:c.join(". ")};
+    });
+    return {name:l.name, rows, remarks, instruments:[...insts].filter(filled).join("; "), waterMax: waterMax ? Math.ceil(waterMax) : 0};
+  });
+  const chunks = []; for(let i=0;i<locData.length;i+=GGT012_MAX_TABS) chunks.push(locData.slice(i,i+GGT012_MAX_TABS));
+  if(!chunks.length) chunks.push([]);
+  const files = [];
+  for(let i=0;i<chunks.length;i++){
+    const buf = await fillGGT012(templateBuf, {fullNo:p.fullNo, dateSerial:excelDate(new Date()), locations:chunks[i]});
+    const name = [safeName(p.fullNo), safeName(p.site), "GGT012-return-visits", chunks.length>1?"part"+(i+1):""].filter(filled).join("_")+".xlsx";
+    files.push(new File([buf], name, {type:XLSX_TYPE}));
+  }
+  return files;
+}
+async function exportGGT012(p, mode){
+  if(!window.fillGGT012 || !window.JSZip){ toast("The template code isn't loaded. Open the app once with signal."); return; }
+  flush();
+  if(projVisits(p.id).length>6) toast("The template has room for 6 visits. Only the first 6 are included.", 5000);
+  if(!projLocs(p).length){ toast("Add monitoring locations first."); return; }
+  let files; try{ files = await buildGGT012Files(p); }catch(e){ toast("Couldn't build the spreadsheet: "+(e.message||e), 6000); return; }
+  const vs = projVisits(p.id);
+  exportFiles(files, mode, `Gas monitoring return visits – ${p.fullNo} ${p.site||""}`.trim(),
+    [`Gas monitoring return visits attached: ${files.map(f=>f.name).join(", ")}`, "", `Project: ${p.fullNo}`, `Site: ${p.site||"–"}`,
+     `Visits: ${vs.map(v=>`${v.visitNo||"?"} (${fmtDate(v.datetime,false)})`).join(", ")||"–"}`, `Locations: ${projLocs(p).map(l=>l.name).join(", ")||"–"}`,
+     "", "Still to complete by hand: project name and date of installation."]);
+}
+async function exportFiles(files, mode, subject, lines){
+  if(mode==="email" && navigator.share && navigator.canShare && navigator.canShare({files})){
+    try{ await navigator.share({files, title:files[0].name}); return; }
+    catch(e){ if(e && e.name==="AbortError"){ toast("Cancelled. Nothing was exported."); return; } }
+  }
+  files.forEach((f,i)=>setTimeout(()=>downloadFile(f), i*600));
+  if(mode==="email"){
+    const box=$("#emailStep"); if(box){ $("#emailFile").textContent=files.map(f=>f.name).join(" and "); box.querySelector("a").href=mailto(subject, lines); box.hidden=false; clearTimeout(toastTimer); $("#toast").hidden=true; box.scrollIntoView({block:"nearest",behavior:"smooth"}); }
+  } else toast(files.length>1 ? `Downloaded ${files.length} files` : "Downloaded "+files[0].name);
 }
 function downloadFile(file){
   const a = document.createElement("a"); a.href = URL.createObjectURL(file); a.download = file.name; document.body.appendChild(a); a.click();
@@ -906,7 +972,7 @@ document.addEventListener("click", e=>{
   const segBtn = e.target.closest(".seg button");
   if(segBtn){ const seg=segBtn.parentElement, k=seg.dataset.set, o=curObj(); if(!o) return;
     let val = (o[k]===segBtn.dataset.val) ? "" : segBtn.dataset.val;
-    if(k==="status" && !val) val="Monitored";
+    if(!val && SEG_DEFAULTS[k]) val=SEG_DEFAULTS[k];
     applyEdit(k, val); flush();
     seg.querySelectorAll("button").forEach(b=>b.setAttribute("aria-pressed", String(b.dataset.val===val)));
     if(k==="instrument"){ const x=$("#instOther"); if(x) x.hidden = val!=="Other"; }
@@ -934,6 +1000,7 @@ document.addEventListener("click", e=>{
   else if(act==="do-move") moveVisit(v);
   else if(act==="export-visit") exportVisit(v, btn.dataset.mode);
   else if(act==="export-project") exportProject(p, btn.dataset.mode);
+  else if(act==="export-ggt") exportGGT012(p, btn.dataset.mode);
   else if(act==="do-import") importLegacy(btn.dataset.id);
   else if(act==="do-restore") restoreLost();
   else if(act==="forget-lost") forgetLost();
