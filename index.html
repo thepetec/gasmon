@@ -8,7 +8,6 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="Gas sheet">
-<meta name="apple-mobile-web-app-status-bar-style" content="default">
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
 <link rel="icon" href="icon-192.png">
@@ -143,19 +142,38 @@ button:focus-visible,a:focus-visible{outline:3px solid var(--hv);outline-offset:
 .summary dt{color:var(--muted);font-size:14px}
 .summary dd{margin:0;font-size:15px;font-weight:600}
 @media (prefers-reduced-motion:no-preference){.prog i{transition:width .2s}}
+.grid > .grid{grid-column:1/-1}
+.last{margin:4px 0 0;font-size:13px;color:var(--muted)}
+.last b{color:var(--ink);font-weight:700}
+.linkbtn{border:0;background:none;padding:0;color:var(--hv-text);font-weight:700;text-decoration:underline;cursor:pointer;font-size:inherit}
+.err-notice{border-left-color:var(--warn);color:var(--warn);font-weight:600}
+.item .tag{flex:0 0 auto}
 </style>
 </head>
 <body>
 <div class="bar" id="bar"></div>
-<main id="app"></main>
+<main id="app"><p class="muted" style="text-align:center;padding:40px 0">Loading…</p></main>
 <div class="toast" id="toast" hidden></div>
-
-<script src="xlsx.full.min.js" onerror="(function(){var s=document.createElement('script');s.src='https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';document.head.appendChild(s);})()"></script>
+<script src="xlsx.full.min.js"></script>
+<script src="firebase.js"></script>
 <script>
 "use strict";
-const APP_VERSION = "1.4"; // keep in step with CACHE in sw.js
-/* ---------- Definitions ---------- */
-const KEY = "gasfield.v1";
+const APP_VERSION = "2.0"; // keep in step with CACHE in sw.js
+
+/* ---------- Settings ---------- */
+const FIREBASE_CONFIG = {
+  apiKey: "AIzaSyCTtWJxmTb9yGlXaas1sfK-kBBB15uq6gg",
+  authDomain: "gas-monitoring-c4484.firebaseapp.com",
+  projectId: "gas-monitoring-c4484",
+  storageBucket: "gas-monitoring-c4484.firebasestorage.app",
+  messagingSenderId: "583951556813",
+  appId: "1:583951556813:web:9add99e14a9a068f490984"
+};
+const EMAIL_DOMAIN = "@geosphere-environmental.co.uk";
+const EXTRA_ALLOWED_EMAILS = ["petercoynework@gmail.com"]; // testing only; must match the Firestore rules
+const PROJECT_RE = /^(\d{4,5})((?:,[A-Z]{2,})+)$/;
+
+/* ---------- Field definitions ---------- */
 const VISIT_NOS = ["1st","2nd","3rd","4th","5th","6th"];
 const INSTRUMENTS = ["GFM436 / MiniRAE (Yellow)","GFM436 / MultiRAE (Green)","Other"];
 const WEATHER = [
@@ -164,6 +182,7 @@ const WEATHER = [
   {k:"wet",  opts:["Wet","Damp","Dry"]},
   {k:"wind", opts:["Calm","Breezy","Windy","Very windy"]}
 ];
+const LOC_STATUS = ["Monitored","Not accessed","Destroyed"];
 const GAS_CHIPS = ["<0.1","nm"];
 const LOC_GROUPS = [
   {title:"Atmospheric pressure", fields:[{k:"pressure",label:"Pressure",unit:"mb",chips:["nm"]}]},
@@ -191,24 +210,6 @@ const FRESH_FIELDS = [
   {k:"voc",label:"VOCs / PID",unit:"ppm",chips:["0","nm"]}
 ];
 
-/* ---------- Storage ---------- */
-let db = load();
-function load(){
-  try{ const s = localStorage.getItem(KEY); if(s){ const d = JSON.parse(s); if(d && d.visits) return d; } }catch(e){}
-  return {visits:{}};
-}
-let saveTimer = null, lastSaved = null, saveError = false;
-function scheduleSave(){ clearTimeout(saveTimer); saveTimer = setTimeout(saveNow, 250); }
-function saveNow(){
-  clearTimeout(saveTimer); saveTimer = null;
-  try{ localStorage.setItem(KEY, JSON.stringify(db)); lastSaved = new Date(); saveError = false; }
-  catch(e){ saveError = true; }
-  paintStatus();
-}
-window.addEventListener("pagehide", saveNow);
-document.addEventListener("visibilitychange", ()=>{ if(document.hidden) saveNow(); });
-try{ if(navigator.storage && navigator.storage.persist) navigator.storage.persist(); }catch(e){}
-
 /* ---------- Helpers ---------- */
 const $ = s => document.querySelector(s);
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2,7);
@@ -217,12 +218,97 @@ const filled = v => v !== undefined && v !== null && String(v).trim() !== "";
 const isNum = v => /^-?(\d+\.?\d*|\.\d+)$/.test(String(v).trim());
 const num = v => isNum(v) ? parseFloat(v) : null;
 function nowLocal(){ const d=new Date(); d.setMinutes(d.getMinutes()-d.getTimezoneOffset()); return d.toISOString().slice(0,16); }
-function fmtDate(s){ if(!s) return "No date"; const d=new Date(s); if(isNaN(d)) return s; return d.toLocaleString("en-GB",{day:"numeric",month:"short",year:"numeric",hour:"2-digit",minute:"2-digit"}); }
-function fmtTime(d){ return d.toLocaleTimeString("en-GB",{hour:"2-digit",minute:"2-digit"}); }
-function touch(v){ v.updated = Date.now(); scheduleSave(); }
+function fmtDate(s, withTime=true){ if(!s) return "No date"; const d=new Date(s); if(isNaN(d)) return String(s);
+  return d.toLocaleString("en-GB", withTime ? {day:"numeric",month:"short",year:"numeric",hour:"2-digit",minute:"2-digit"} : {day:"numeric",month:"short",year:"numeric"}); }
 let toastTimer;
 function toast(msg, ms=2600){ const t=$("#toast"); t.textContent=msg; t.hidden=false; clearTimeout(toastTimer); toastTimer=setTimeout(()=>t.hidden=true,ms); }
-function visitTitle(v){ return [v.project, v.site].filter(filled).join(" ") || "Untitled visit"; }
+function normProject(s){ return String(s||"").toUpperCase().replace(/\s+/g,""); }
+function setPath(obj, path, value){ const ks=path.split("."); let o=obj; for(let i=0;i<ks.length-1;i++){ if(typeof o[ks[i]]!=="object"||o[ks[i]]===null) o[ks[i]]={}; o=o[ks[i]]; } o[ks[ks.length-1]]=value; }
+function msOf(v){ const t = v && (v.toMillis ? v.toMillis() : (v.seconds ? v.seconds*1000 : v)); return typeof t==="number" ? t : 0; }
+function emailAllowed(e){ e=String(e||"").toLowerCase(); return e.endsWith(EMAIL_DOMAIN) || EXTRA_ALLOWED_EMAILS.includes(e); }
+
+/* ---------- Firebase ---------- */
+let app, auth, fdb, user = null;
+const projects = new Map(); // num -> project
+const visits = new Map();   // id -> visit
+let loaded = {projects:false, visits:false};
+let pendingRemote = {projects:false, visits:false};
+let syncError = "";
+let unsubs = [];
+
+function startFirebase(){
+  if(!window.FB){ renderFatal("The app's database code didn't load. Open it once with signal."); return; }
+  app = FB.initializeApp(FIREBASE_CONFIG);
+  auth = FB.initializeAuth(app, {persistence:[FB.indexedDBLocalPersistence, FB.browserLocalPersistence]});
+  fdb = FB.initializeFirestore(app, {localCache: FB.persistentLocalCache({tabManager: FB.persistentMultipleTabManager()})});
+  FB.onAuthStateChanged(auth, u => {
+    user = u;
+    stopListeners();
+    if(!u) return renderSignIn();
+    if(!u.emailVerified) return renderVerify();
+    startListeners();
+    route();
+  });
+}
+function stopListeners(){ unsubs.forEach(f=>f()); unsubs=[]; projects.clear(); visits.clear(); loaded={projects:false,visits:false}; }
+function startListeners(){
+  const onErr = e => { syncError = e && e.code==="permission-denied" ? "This account doesn't have access to the database." : "Sync problem: " + (e && (e.code||e.message)); paintStatus(); route(); };
+  unsubs.push(FB.onSnapshot(FB.collection(fdb,"projects"), {includeMetadataChanges:true}, snap => {
+    projects.clear(); snap.forEach(d => projects.set(d.id, {...d.data(), id:d.id}));
+    reapplyPending("projects", projects);
+    loaded.projects = true; pendingRemote.projects = snap.metadata.hasPendingWrites; syncError=""; onData();
+  }, onErr));
+  unsubs.push(FB.onSnapshot(FB.query(FB.collection(fdb,"visits"), FB.where("deleted","==",false)), {includeMetadataChanges:true}, snap => {
+    visits.clear(); snap.forEach(d => visits.set(d.id, {...d.data(), id:d.id}));
+    reapplyPending("visits", visits);
+    loaded.visits = true; pendingRemote.visits = snap.metadata.hasPendingWrites; syncError=""; onData();
+  }, onErr));
+}
+
+/* Edits are applied to memory straight away and written to Firestore after a short pause.
+   Firestore saves them on the phone first and sends them when there's signal. */
+const pend = new Map(); // "col/id" -> {col,id,fields}
+let flushTimer = null;
+function queueUpdate(col, id, path, value){
+  const key = col+"/"+id;
+  if(!pend.has(key)) pend.set(key, {col, id, fields:{}});
+  pend.get(key).fields[path] = value;
+  clearTimeout(flushTimer); flushTimer = setTimeout(flush, 400);
+  paintStatus();
+}
+function reapplyPending(col, map){ for(const p of pend.values()){ if(p.col!==col) continue; const o=map.get(p.id); if(o) for(const [k,v] of Object.entries(p.fields)) setPath(o,k,v); } }
+function flush(){
+  clearTimeout(flushTimer); flushTimer=null;
+  for(const [key,p] of pend){
+    pend.delete(key);
+    FB.updateDoc(FB.doc(fdb, p.col, p.id), {...p.fields, updatedAt:FB.serverTimestamp(), updatedBy:user.email})
+      .catch(e => { syncError = "Couldn't save a change: " + (e.code||e.message); paintStatus(); });
+  }
+  paintStatus();
+}
+window.addEventListener("pagehide", flush);
+document.addEventListener("visibilitychange", ()=>{ if(document.hidden) flush(); });
+window.addEventListener("online", paintStatus); window.addEventListener("offline", paintStatus);
+function createDoc(col, id, data){
+  const full = {...data, createdAt:FB.serverTimestamp(), createdBy:user.email, updatedAt:FB.serverTimestamp(), updatedBy:user.email};
+  const local = {...data, id, createdBy:user.email, updatedBy:user.email};
+  (col==="projects"?projects:visits).set(id, local);
+  FB.setDoc(FB.doc(fdb, col, id), full, {merge:true}).catch(e => { syncError = "Couldn't save: " + (e.code||e.message); paintStatus(); });
+  return local;
+}
+
+/* ---------- Data helpers ---------- */
+function projLocs(p){ return Object.entries(p.locations||{}).filter(([,l])=>!l.removed).map(([id,l])=>({id,...l})).sort((a,b)=>(a.order||0)-(b.order||0)); }
+function projVisits(num){ return [...visits.values()].filter(v=>v.projectNum===num).sort((a,b)=>String(a.datetime).localeCompare(String(b.datetime))); }
+function lastActivity(p){ const vs=projVisits(p.id); return vs.length ? vs[vs.length-1].datetime : ""; }
+function reading(v, locId){ return (v.readings && v.readings[locId]) || {}; }
+function prevValue(v, locId, k){
+  const vs = projVisits(v.projectNum).filter(x => x.id!==v.id && String(x.datetime) < String(v.datetime));
+  for(let i=vs.length-1;i>=0;i--){ const r=reading(vs[i],locId); if(filled(r[k])) return {val:r[k], visit:vs[i].visitNo||fmtDate(vs[i].datetime,false)}; }
+  return null;
+}
+function suggestVisitNo(num){ const used=projVisits(num).map(v=>VISIT_NOS.indexOf(v.visitNo)); const max=Math.max(-1,...used); return VISIT_NOS[max+1] || ""; }
+function visitTitle(v){ const p=projects.get(v.projectNum); return `${p?p.fullNo:v.projectNum}${v.visitNo?" · "+v.visitNo+" visit":""}`; }
 
 /* ---------- Validation (advisory only) ---------- */
 function tokenOK(v){ const t=String(v).trim().toLowerCase(); return t==="nm"||t==="dry"||/^<\s*\d*\.?\d+$/.test(t); }
@@ -246,10 +332,43 @@ function checkFresh(o){
   const x=num(o.o2); if(x!==null&&(x<20||x>21.5)&&!w.o2) w.o2="Fresh air oxygen is usually 20.5–21%. Check calibration.";
   return w;
 }
-function locStatus(o){ const n=LOC_FIELDS.filter(f=>filled(o[f.k])).length; return {n, total:LOC_FIELDS.length, warns:Object.keys(checkLoc(o)).length}; }
+function locStatus(r){
+  if(r.status && r.status!=="Monitored") return {n:LOC_FIELDS.length, total:LOC_FIELDS.length, warns:0, skipped:r.status};
+  const n=LOC_FIELDS.filter(f=>filled(r[f.k])).length; return {n, total:LOC_FIELDS.length, warns:Object.keys(checkLoc(r)).length};
+}
 
-/* ---------- Rendering ---------- */
-let cur = {visit:null, obj:null, kind:null};
+/* ---------- Screen state ---------- */
+// cur.kind: home | newproj | project | projedit | visit | details | fresh | loc | import
+let cur = {kind:"home"};
+function curVisit(){ return cur.visitId ? visits.get(cur.visitId) : null; }
+function curProject(){ return cur.projNum ? projects.get(cur.projNum) : null; }
+function curObj(){
+  const v=curVisit();
+  if(cur.kind==="details") return v;
+  if(cur.kind==="fresh") return v && (v.freshAir||{});
+  if(cur.kind==="loc") return v && reading(v, cur.locId);
+  if(cur.kind==="projedit") return curProject();
+  return null;
+}
+// Where an edit to field k on the current screen is stored.
+function editTarget(k){
+  if(cur.kind==="details") return {col:"visits", id:cur.visitId, path:k};
+  if(cur.kind==="fresh") return {col:"visits", id:cur.visitId, path:"freshAir."+k};
+  if(cur.kind==="loc"){
+    if(k==="name") return {col:"projects", id:curVisit().projectNum, path:`locations.${cur.locId}.name`};
+    return {col:"visits", id:cur.visitId, path:`readings.${cur.locId}.${k}`};
+  }
+  if(cur.kind==="projedit") return {col:"projects", id:cur.projNum, path:k};
+  return null;
+}
+function applyEdit(k, value){
+  const t = editTarget(k); if(!t) return;
+  const map = t.col==="projects" ? projects : visits; const o = map.get(t.id); if(!o) return;
+  setPath(o, t.path, value);
+  queueUpdate(t.col, t.id, t.path, value);
+}
+
+/* ---------- Status bar ---------- */
 function bar(title, backHref){
   $("#bar").innerHTML = (backHref?`<button class="back" data-act="go" data-href="${backHref}" aria-label="Back">‹ Back</button>`:"")+
     `<h1>${esc(title)}</h1><span class="status" id="status" role="status"></span>`;
@@ -257,90 +376,273 @@ function bar(title, backHref){
 }
 function paintStatus(){
   const s=$("#status"); if(!s) return;
-  if(saveError){ s.className="status err"; s.textContent="NOT SAVED: storage full or blocked"; return; }
-  s.className="status"; s.textContent = lastSaved ? "Saved on phone "+fmtTime(lastSaved) : (saveTimer?"Saving…":"");
+  if(!user || !user.emailVerified){ s.className="status"; s.textContent=""; return; }
+  if(syncError){ s.className="status err"; s.textContent="Sync problem"; s.title=syncError; return; }
+  const waiting = pend.size>0 || pendingRemote.projects || pendingRemote.visits;
+  s.className="status";
+  if(!waiting) s.textContent = "Synced ✓";
+  else s.textContent = navigator.onLine ? "Syncing…" : "On phone · will sync";
 }
-function fieldHTML(f, o){
+
+/* ---------- Shared bits of UI ---------- */
+function fieldHTML(f, o, prev){
   const chips = (f.chips||[]).length ? `<div class="chips">${f.chips.map(c=>`<button type="button" class="chip" data-chip="${esc(c)}" data-for="${f.k}">${esc(c)}</button>`).join("")}</div>` : "";
+  const last = prev ? `<p class="last">Last: <b>${esc(prev.val)}</b> <span>(${esc(prev.visit)})</span></p>` : "";
   return `<div class="field" id="fd_${f.k}"><label for="f_${f.k}">${esc(f.label)}${f.unit?` <span class="unit">${esc(f.unit)}</span>`:""}</label>
     <input id="f_${f.k}" data-k="${f.k}" type="text" inputmode="decimal" autocomplete="off" autocorrect="off" spellcheck="false" enterkeyhint="next" value="${esc(o[f.k])}">
-    ${chips}<p class="warn" id="w_${f.k}"></p></div>`;
+    ${last}${chips}<p class="warn" id="w_${f.k}"></p></div>`;
 }
 function segHTML(key, opts, val){
   return `<div class="seg" role="group" data-set="${key}">${opts.map(o=>`<button type="button" data-val="${esc(o)}" aria-pressed="${val===o}">${esc(o)}</button>`).join("")}</div>`;
 }
+function sliderHTML(label, act){
+  return `<div class="slide" data-slide="${act}"><span class="slide-label">${esc(label)} →</span>
+    <div class="slide-thumb" role="slider" tabindex="0" aria-label="${esc(label)}. Drag right, or press the right arrow key." aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">›</div></div>`;
+}
+function emailBlock(act){
+  return `<div class="field" style="margin-bottom:12px"><label for="emailTo">Email to</label><div class="emailrow"><input type="text" id="emailTo" inputmode="email" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" placeholder="name" value="${esc(emailUser())}"><span class="suffix" id="emailSuffix" ${emailUser().includes("@")?"hidden":""}>${EMAIL_DOMAIN}</span></div></div>
+    <div class="row"><button class="btn primary" data-act="${act}" data-mode="email">Email spreadsheet</button><button class="btn" data-act="${act}" data-mode="download">Download spreadsheet</button></div>
+    <div class="emailstep" id="emailStep" hidden><p><strong>Saved to Downloads.</strong> Open the email, tap the paperclip and attach <strong id="emailFile"></strong>.</p><a class="btn hv block" href="#">Open email</a></div>`;
+}
 function paintWarnings(){
-  if(!cur.obj || (cur.kind!=="loc" && cur.kind!=="fresh")) return;
-  const w = cur.kind==="loc" ? checkLoc(cur.obj) : checkFresh(cur.obj);
-  const fields = cur.kind==="loc" ? LOC_FIELDS : FRESH_FIELDS;
-  for(const f of fields){ const p=$("#w_"+f.k), fd=$("#fd_"+f.k); if(!p) continue; p.textContent=w[f.k]||""; fd.classList.toggle("has-warn",!!w[f.k]); }
+  const o = curObj(); if(!o || (cur.kind!=="loc" && cur.kind!=="fresh")) return;
+  const w = cur.kind==="loc" ? checkLoc(o) : checkFresh(o);
+  for(const f of (cur.kind==="loc" ? LOC_FIELDS : FRESH_FIELDS)){ const p=$("#w_"+f.k), fd=$("#fd_"+f.k); if(!p) continue; p.textContent=w[f.k]||""; fd.classList.toggle("has-warn",!!w[f.k]); }
+}
+// After a sync update, refresh form values without disturbing the field being typed in.
+function refreshForm(){
+  const o = curObj(); if(!o) return route();
+  document.querySelectorAll("main [data-k]").forEach(el=>{
+    if(el===document.activeElement) return;
+    const v = el.dataset.k==="name" && cur.kind==="loc" ? ((curProject()||projects.get(curVisit().projectNum)).locations[cur.locId]||{}).name : o[el.dataset.k];
+    if((el.value||"") !== String(v??"")) el.value = v ?? "";
+  });
+  document.querySelectorAll("main .seg").forEach(seg=>{ const val=o[seg.dataset.set]; seg.querySelectorAll("button").forEach(b=>b.setAttribute("aria-pressed", String(b.dataset.val===val))); });
+  paintWarnings();
+}
+function onData(){
+  paintStatus();
+  if(!loaded.projects || !loaded.visits) return;
+  if(["details","fresh","loc","projedit"].includes(cur.kind) && document.querySelector("main [data-k]")) return refreshForm();
+  if(cur.kind==="home" && $("#plist")) { $("#plist").innerHTML = projectListHTML(); return; }
+  const a = document.activeElement; if(a && a.matches && a.matches("main input, main textarea")) return; // don't interrupt typing
+  if(cur.kind!=="newproj" && cur.kind!=="import" && cur.kind!=="auth") route(true);
 }
 
-function renderHome(){
-  cur={visit:null,obj:null,kind:"home"};
+/* ---------- Screens: account ---------- */
+function renderFatal(msg){ $("#bar").innerHTML=`<h1>Gas monitoring</h1>`; $("#app").innerHTML=`<div class="panel"><p>${esc(msg)}</p></div>`; }
+function renderSignIn(mode="in"){
+  cur={kind:"auth"};
   bar("Gas monitoring");
-  const visits = Object.values(db.visits).sort((a,b)=>(b.updated||0)-(a.updated||0));
+  const create = mode==="create";
+  $("#app").innerHTML = `${navigator.onLine?"":`<p class="notice">You need signal to sign in the first time. After that the app works without it.</p>`}
+    <h2>${create?"Create an account":"Sign in"}</h2><div class="panel"><div class="grid">
+    ${create?`<div class="field wide"><label for="a_name">Your name</label><input type="text" id="a_name" autocomplete="name"></div>`:""}
+    <div class="field wide"><label for="a_email">Work email</label><input type="text" id="a_email" inputmode="email" autocomplete="email" autocapitalize="none" autocorrect="off" spellcheck="false" placeholder="name${EMAIL_DOMAIN}"></div>
+    <div class="field wide"><label for="a_pass">Password${create?` <span class="unit">at least 8 characters</span>`:""}</label><input type="password" id="a_pass" autocomplete="${create?"new-password":"current-password"}"></div>
+    <div class="field wide"><button class="btn primary block" data-act="${create?"do-create":"do-signin"}">${create?"Create account":"Sign in"}</button><p class="warn" id="a_err"></p></div>
+    </div></div>
+    <div class="row" style="margin-top:14px">${create?`<button class="btn" data-act="show-signin">I already have an account</button>`:`<button class="btn" data-act="show-create">Create an account</button><button class="btn" data-act="do-reset">Forgot password</button>`}</div>
+    <p class="muted small version">Version ${APP_VERSION}</p>`;
+  $("#a_pass").addEventListener("keydown", e=>{ if(e.key==="Enter"){ e.preventDefault(); create ? doCreate() : doSignIn(); } });
+}
+function authError(e){
+  const c = e && e.code || "";
+  const msg = {"auth/invalid-credential":"Email or password not recognised.","auth/wrong-password":"Email or password not recognised.","auth/user-not-found":"Email or password not recognised.",
+    "auth/email-already-in-use":"There's already an account with this email. Sign in instead.","auth/weak-password":"Choose a longer password.",
+    "auth/invalid-email":"That email address doesn't look right.","auth/network-request-failed":"No signal. Try again when you're connected.",
+    "auth/too-many-requests":"Too many attempts. Wait a few minutes and try again."}[c] || ("Something went wrong: " + (c || e.message));
+  const p=$("#a_err"); if(p) p.textContent = msg; else toast(msg, 5000);
+}
+async function doSignIn(){ const email=$("#a_email").value.trim(), pass=$("#a_pass").value; $("#a_err").textContent="";
+  try{ await FB.signInWithEmailAndPassword(auth, email, pass); }catch(e){ authError(e); } }
+async function doCreate(){
+  const name=$("#a_name").value.trim(), email=$("#a_email").value.trim().toLowerCase(), pass=$("#a_pass").value; $("#a_err").textContent="";
+  if(!name){ $("#a_err").textContent="Enter your name. It's used for 'Fieldwork by'."; return; }
+  if(!emailAllowed(email)){ $("#a_err").textContent=`Use your ${EMAIL_DOMAIN} email address.`; return; }
+  if(pass.length<8){ $("#a_err").textContent="Use a password of at least 8 characters."; return; }
+  try{
+    const cred = await FB.createUserWithEmailAndPassword(auth, email, pass);
+    await FB.updateProfile(cred.user, {displayName:name});
+    await FB.sendEmailVerification(cred.user, {url: location.href.split("#")[0]});
+    renderVerify();
+  }catch(e){ authError(e); }
+}
+async function doReset(){
+  const email=$("#a_email").value.trim(); if(!email){ $("#a_err").textContent="Enter your email above first."; return; }
+  try{ await FB.sendPasswordResetEmail(auth, email); toast("Password reset email sent. Check your inbox.", 5000); }catch(e){ authError(e); }
+}
+function renderVerify(){
+  cur={kind:"auth"};
+  bar("Confirm your email");
+  $("#app").innerHTML = `<div class="panel"><p>We've sent a link to <strong>${esc(user.email)}</strong>. Open it on any device to confirm your address, then come back and tap Continue.</p>
+    <p class="muted small">Check your junk folder if it hasn't arrived.</p>
+    <button class="btn primary block" data-act="verify-continue">Continue</button><p class="warn" id="a_err"></p></div>
+    <div class="row" style="margin-top:14px"><button class="btn" data-act="verify-resend">Send the link again</button><button class="btn" data-act="sign-out">Sign out</button></div>`;
+}
+async function verifyContinue(){
+  try{ await FB.reload(user); }catch(e){ return authError(e); }
+  if(!user.emailVerified){ $("#a_err").textContent="Not confirmed yet. Open the link in the email first."; return; }
+  await user.getIdToken(true); // refresh so the database sees the confirmed email
+  startListeners(); location.hash="#/"; route();
+}
+
+/* ---------- Screens: home and projects ---------- */
+let homeSearch = "", showCompleted = false;
+function renderHome(){
+  cur={kind:"home"};
+  bar("Gas monitoring");
   const standalone = window.matchMedia("(display-mode: standalone)").matches || navigator.standalone;
   let h = "";
-  if(!standalone) h += `<p class="notice">Add this page to your home screen so it opens without signal. Your readings stay on this phone until you export them.</p>`;
-  h += `<h2>Visits on this phone</h2>`;
-  if(!visits.length) h += `<div class="panel empty"><p>No visits yet.</p><p class="muted small">Start a visit, then add the locations you're monitoring today.</p></div>`;
-  else h += `<div class="list">${visits.map(v=>{
-      const done=v.locations.filter(l=>locStatus(l).n===LOC_FIELDS.length).length;
-      const exp = !v.exportedAt ? `<span class="pill warn-p">Not exported</span>` : (v.updated>v.exportedAt ? `<span class="pill warn-p">Changed since export</span>` : `<span class="pill ok-p">Exported</span>`);
-      return `<a class="item" href="#/v/${v.id}"><div class="main"><div class="title">${esc(visitTitle(v))}${v.visitNo?` · ${esc(v.visitNo)} visit`:""}</div>
-        <div class="sub">${esc(fmtDate(v.datetime))} · ${v.locations.length} location${v.locations.length===1?"":"s"}, ${done} complete</div><div style="margin-top:4px">${exp}</div></div><span class="chev">›</span></a>`;
-    }).join("")}</div>`;
-  h += `<div style="margin-top:16px"><button class="btn primary block" data-act="new-visit">Start a new visit</button></div>`;
-  h += `<p class="muted small version">Version ${APP_VERSION}</p>`;
+  if(syncError) h += `<p class="notice err-notice">${esc(syncError)}</p>`;
+  if(!standalone) h += `<p class="notice">Add this page to your home screen so it opens without signal.</p>`;
+  const legacy = legacyVisits();
+  if(legacy.length) h += `<a class="item" href="#/import" style="border-color:var(--hv)"><div class="main"><div class="title">${legacy.length} visit${legacy.length===1?"":"s"} from the previous version</div><div class="sub">Still only on this phone. Tap to file them into projects.</div></div><span class="chev">›</span></a>`;
+  h += `<div class="addrow" style="margin:6px 0 4px"><input type="text" id="search" placeholder="Search project number or site" value="${esc(homeSearch)}" autocomplete="off" aria-label="Search projects"></div>`;
+  h += `<div id="plist">${projectListHTML()}</div>`;
+  h += `<div style="margin-top:16px"><a class="btn primary block" href="#/newproject">New project</a></div>`;
+  h += `<p class="muted small version">Signed in as ${esc(user.displayName||user.email)} · <button class="linkbtn" data-act="sign-out">Sign out</button><br>Version ${APP_VERSION}</p>`;
   $("#app").innerHTML = h;
+  $("#search").addEventListener("input", e=>{ homeSearch=e.target.value; $("#plist").innerHTML=projectListHTML(); });
 }
-
-function renderVisit(v){
-  cur={visit:v,obj:null,kind:"visit"};
-  bar(visitTitle(v), "#/");
-  const weather = WEATHER.map(w=>v[w.k]).filter(filled).join(", ");
-  const inst = v.instrument==="Other" ? (v.instrumentOther||"Other") : v.instrument;
-  let h = `<h2>Visit details</h2><div class="panel summary"><dl>
-      <dt>Project</dt><dd>${esc(v.project||"–")}</dd><dt>Site</dt><dd>${esc(v.site||"–")}</dd>
-      <dt>Visit</dt><dd>${esc(v.visitNo||"–")}</dd><dt>Date</dt><dd>${esc(fmtDate(v.datetime))}</dd>
-      <dt>By</dt><dd>${esc(v.by||"–")}</dd><dt>Instrument</dt><dd>${esc(inst||"–")}</dd><dt>Weather</dt><dd>${esc(weather||"–")}</dd></dl>
-      <a class="btn block" href="#/v/${v.id}/details">Edit visit details</a></div>`;
-  const fw = Object.keys(checkFresh(v.freshAir)).length, fn = FRESH_FIELDS.filter(f=>filled(v.freshAir[f.k])).length;
-  h += `<h2>Readings</h2><div class="list">
-    <a class="item" href="#/v/${v.id}/fresh"><span class="tag fresh">Fresh air</span><div class="main"><div class="sub">${fn} of ${FRESH_FIELDS.length} filled${fw?` · <span class="pill warn-p">${fw} to check</span>`:""}</div>
-    <div class="prog"><i style="width:${fn/FRESH_FIELDS.length*100}%"></i></div></div><span class="chev">›</span></a>`;
-  h += v.locations.map(l=>{ const s=locStatus(l);
-    return `<a class="item" href="#/v/${v.id}/l/${l.id}"><span class="tag">${esc(l.name)}</span><div class="main"><div class="sub">${s.n===s.total?"Complete":`${s.n} of ${s.total} filled`}${s.warns?` · <span class="pill warn-p">${s.warns} to check</span>`:""}</div>
-      <div class="prog"><i style="width:${s.n/s.total*100}%"></i></div></div><span class="chev">›</span></a>`; }).join("");
-  h += `</div>`;
-  h += `<h2>Add locations</h2><div class="panel"><div class="addrow"><input type="text" id="addLoc" placeholder="e.g. WS01, WS04, BH2" autocapitalize="characters" autocomplete="off" aria-label="Location names" enterkeyhint="done"><button class="btn hv" data-act="add-loc">Add</button></div>
-    <p class="muted small" style="margin:6px 0 0">Separate several with commas.</p></div>`;
-  h += `<h2>Finish</h2><div class="panel"><p class="small">Email or download a spreadsheet of this visit. You can export again after any changes.</p>
-    <div class="field" style="margin-bottom:12px"><label for="emailTo">Email to</label><div class="emailrow"><input type="text" id="emailTo" inputmode="email" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" placeholder="name" value="${esc(emailUser())}"><span class="suffix" id="emailSuffix" ${emailUser().includes("@")?"hidden":""}>${EMAIL_DOMAIN}</span></div></div>
-    <div class="row"><button class="btn primary" data-act="export-email">Email spreadsheet</button><button class="btn" data-act="export-dl">Download spreadsheet</button></div>
-    <div class="emailstep" id="emailStep" hidden><p><strong>Saved to Downloads.</strong> Open the email, tap the paperclip and attach <strong>${esc(fileName(v))}</strong>.</p><a class="btn hv block" href="#">Open email</a></div>
-    <p class="muted small" style="margin:8px 0 0">${v.exportedAt?`Last exported ${esc(fmtDate(new Date(v.exportedAt)))}${v.updated>v.exportedAt?" — changed since":""}`:"Not exported yet"}</p></div>`;
-  h += `<h2>Other</h2><div class="row"><button class="btn" data-act="next-visit">Start next visit with these locations</button></div><div style="margin-top:12px">${sliderHTML("Slide to delete this visit","del-visit")}</div>`;
+function projectListHTML(){
+  if(!loaded.projects || !loaded.visits) return `<div class="panel empty"><p class="muted">Loading…</p></div>`;
+  const q = homeSearch.trim().toLowerCase();
+  const all = [...projects.values()].filter(p => !q || String(p.fullNo).toLowerCase().includes(q) || String(p.site||"").toLowerCase().includes(q));
+  const live = all.filter(p=>!p.completed), done = all.filter(p=>p.completed);
+  const sortFn = (a,b) => String(lastActivity(b)||"").localeCompare(String(lastActivity(a)||"")) || String(b.id).localeCompare(String(a.id));
+  const item = p => { const vs=projVisits(p.id), last=vs[vs.length-1];
+    return `<a class="item" href="#/p/${p.id}"><span class="tag">${esc(p.fullNo)}</span><div class="main"><div class="title">${esc(p.site||"No site name")}</div>
+      <div class="sub">${vs.length} visit${vs.length===1?"":"s"}${last?` · last ${esc(fmtDate(last.datetime,false))}`:""}</div></div><span class="chev">›</span></a>`; };
+  let h = `<h2>${q?"Matching projects":"Ongoing projects"}</h2>`;
+  h += live.length ? `<div class="list">${live.sort(sortFn).map(item).join("")}</div>` : `<div class="panel empty"><p class="muted">${q?"No ongoing projects match.":"No ongoing projects."}</p></div>`;
+  if(done.length){
+    h += `<button class="btn block" style="margin-top:14px" data-act="toggle-completed">${showCompleted?"Hide":"Show"} completed projects (${done.length})</button>`;
+    if(showCompleted) h += `<div class="list" style="margin-top:8px">${done.sort(sortFn).map(item).join("")}</div>`;
+  }
+  return h;
+}
+function renderNewProject(){
+  cur={kind:"newproj"};
+  bar("New project", "#/");
+  $("#app").innerHTML = `<div class="panel"><div class="grid">
+    <div class="field wide"><label for="np_no">Full project number</label><input type="text" id="np_no" autocomplete="off" autocapitalize="characters" autocorrect="off" spellcheck="false" placeholder="e.g. 10171,GI or 11031,GI,SK">
+      <p class="muted small" style="margin:4px 0 0">4 or 5 digits, then one or more codes separated by commas.</p><p class="warn" id="np_err"></p></div>
+    <div class="field wide"><label for="np_site">Site name</label><input type="text" id="np_site" autocomplete="off"></div>
+    <div class="field wide"><label for="np_locs">Monitoring locations <span class="unit">optional, can add later</span></label><input type="text" id="np_locs" autocomplete="off" autocapitalize="characters" placeholder="e.g. WS01, WS04, BH2"></div>
+    <div class="field wide"><button class="btn primary block" data-act="create-project">Create project</button></div></div></div>`;
+}
+function createProject(){
+  const full = normProject($("#np_no").value), m = full.match(PROJECT_RE), err=$("#np_err");
+  if(!m){ err.textContent = "Doesn't match the format, e.g. 10171,GI"; return; }
+  const n = m[1];
+  if(projects.has(n)){ const p=projects.get(n); toast(`Project ${n} already exists as ${p.fullNo}. Opening it.`, 4000); location.hash=`#/p/${n}`; return; }
+  const locs = {}; parseNames($("#np_locs").value).forEach((name,i)=>{ locs[uid()] = {name, order:i}; });
+  createDoc("projects", n, {fullNo:full, site:$("#np_site").value.trim(), locations:locs, completed:false});
+  location.hash = `#/p/${n}`;
+}
+function parseNames(s){ const seen=new Set(), out=[]; String(s||"").split(/[,;\n]+/).map(x=>x.trim().toUpperCase()).filter(Boolean).forEach(x=>{ if(!seen.has(x)){ seen.add(x); out.push(x); } }); return out; }
+function addLocationsTo(p, names){
+  const have = new Set(projLocs(p).map(l=>l.name.toUpperCase())); const removed = Object.entries(p.locations||{}).filter(([,l])=>l.removed);
+  let order = Math.max(-1, ...Object.values(p.locations||{}).map(l=>l.order||0)) + 1; const added=[], skipped=[];
+  for(const n of names){
+    if(have.has(n)){ skipped.push(n); continue; }
+    const back = removed.find(([,l])=>l.name.toUpperCase()===n);
+    if(back){ p.locations[back[0]].removed=false; queueUpdate("projects", p.id, `locations.${back[0]}.removed`, false); }
+    else { const id=uid(); const l={name:n, order:order++}; p.locations = p.locations||{}; p.locations[id]=l; queueUpdate("projects", p.id, `locations.${id}`, l); }
+    have.add(n); added.push(n);
+  }
+  flush();
+  if(skipped.length) toast(`Already in this project: ${skipped.join(", ")}`); else if(added.length) toast(`Added ${added.length} location${added.length===1?"":"s"}`);
+}
+function renderProject(p){
+  cur={kind:"project", projNum:p.id};
+  bar(p.fullNo, "#/");
+  const vs = projVisits(p.id), locs = projLocs(p);
+  let h = `<div class="panel summary"><dl><dt>Project</dt><dd>${esc(p.fullNo)}</dd><dt>Site</dt><dd>${esc(p.site||"–")}</dd><dt>Status</dt><dd>${p.completed?"Completed":"Ongoing"}</dd></dl>
+    <a class="btn block" href="#/p/${p.id}/edit">Edit project</a></div>`;
+  h += `<h2>Visits</h2>`;
+  h += vs.length ? `<div class="list">${vs.map(v=>{
+      const done = locs.filter(l=>locStatus(reading(v,l.id)).n===LOC_FIELDS.length).length;
+      return `<a class="item" href="#/v/${v.id}"><span class="tag">${esc(v.visitNo||"?")}</span><div class="main"><div class="title">${esc(fmtDate(v.datetime))}</div>
+        <div class="sub">${esc(v.by||"–")} · ${done} of ${locs.length} locations complete</div></div><span class="chev">›</span></a>`; }).join("")}</div>`
+    : `<div class="panel empty"><p class="muted">No visits yet.</p></div>`;
+  h += `<div style="margin-top:12px"><button class="btn primary block" data-act="new-visit">Start ${esc(suggestVisitNo(p.id)||"a new")} visit</button></div>`;
+  h += `<h2>Monitoring locations</h2><div class="panel"><p class="small">${locs.length ? locs.map(l=>`<span class="tag" style="margin:0 6px 6px 0">${esc(l.name)}</span>`).join("") : `<span class="muted">None yet.</span>`}</p>
+    <div class="addrow"><input type="text" id="addLoc" placeholder="e.g. WS01, WS04, BH2" autocapitalize="characters" autocomplete="off" aria-label="Location names" enterkeyhint="done"><button class="btn hv" data-act="add-loc">Add</button></div>
+    <p class="muted small" style="margin:6px 0 0">Locations are shared by every visit to this project. Rename or remove one from its reading page.</p></div>`;
+  h += `<h2>Compiled results</h2><div class="panel"><p class="small">One spreadsheet with a sheet per location and a row per visit, in the return visits layout, plus all the raw data.</p>${emailBlock("export-project")}</div>`;
   $("#app").innerHTML = h;
-  const inp=$("#addLoc"); inp.addEventListener("keydown",e=>{ if(e.key==="Enter"){ e.preventDefault(); addLocations(v); } });
-  $("#emailTo").addEventListener("input", e=>{
-    try{ localStorage.setItem("gasfield.emailTo", e.target.value.trim()); }catch(err){}
-    $("#emailSuffix").hidden = e.target.value.includes("@");
-    const step=$("#emailStep"); if(step && !step.hidden) step.querySelector("a").href = emailLink(v);
+  bindAddLoc(()=>p); bindEmailTo();
+}
+function renderProjectEdit(p){
+  cur={kind:"projedit", projNum:p.id};
+  bar("Edit project", `#/p/${p.id}`);
+  $("#app").innerHTML = `<div class="panel"><div class="grid">
+    <div class="field wide"><label for="pe_no">Full project number</label><input type="text" id="pe_no" value="${esc(p.fullNo)}" autocapitalize="characters" autocomplete="off" autocorrect="off" spellcheck="false">
+      <p class="muted small" style="margin:4px 0 0">You can change the letter codes. The number ${esc(p.id)} can't change; to file a visit under a different number, move the visit instead.</p><p class="warn" id="pe_err"></p></div>
+    <div class="field wide"><label for="f_site">Site name</label><input type="text" id="f_site" data-k="site" value="${esc(p.site)}" autocomplete="off"></div>
+  </div></div>
+  <h2>Status</h2><div class="panel"><p class="small">${p.completed?"This project is marked completed and hidden from the ongoing list. Nothing has been deleted.":"Mark the project completed to hide it from the ongoing list. Nothing is deleted and it can be reopened."}</p>
+    <button class="btn ${p.completed?"":"primary"} block" data-act="toggle-project-done">${p.completed?"Reopen project":"Mark project completed"}</button></div>`;
+  $("#pe_no").addEventListener("change", e=>{
+    const full=normProject(e.target.value), m=full.match(PROJECT_RE), err=$("#pe_err");
+    if(!m){ err.textContent="Doesn't match the format, e.g. 10171,GI"; return; }
+    if(m[1]!==p.id){ err.textContent=`The number must stay ${p.id}.`; return; }
+    err.textContent=""; e.target.value=full; applyEdit("fullNo", full); flush(); toast("Project number updated");
   });
 }
 
+/* ---------- Screens: visits ---------- */
+function newVisit(p){
+  const vs = projVisits(p.id), last = vs[vs.length-1] || {};
+  const id = uid();
+  createDoc("visits", id, {projectNum:p.id, visitNo:suggestVisitNo(p.id), datetime:nowLocal(), by:user.displayName||"",
+    instrument:last.instrument||"", instrumentOther:last.instrumentOther||"", relativeTo:last.relativeTo||"",
+    temp:"", sky:"", wet:"", wind:"", recentWeather:"", airTemp:"", freshAir:{}, readings:{}, deleted:false, exportedAt:0});
+  location.hash = `#/v/${id}/details`;
+}
+function renderVisit(v){
+  const p = projects.get(v.projectNum);
+  cur={kind:"visit", visitId:v.id, projNum:v.projectNum};
+  bar(visitTitle(v), `#/p/${v.projectNum}`);
+  if(!p){ $("#app").innerHTML=`<div class="panel"><p>This visit's project (${esc(v.projectNum)}) hasn't synced to this phone yet.</p></div>`; return; }
+  const weather = WEATHER.map(w=>v[w.k]).filter(filled).join(", ");
+  const inst = v.instrument==="Other" ? (v.instrumentOther||"Other") : v.instrument;
+  const locs = projLocs(p);
+  let h = `<h2>Visit details</h2><div class="panel summary"><dl>
+      <dt>Project</dt><dd>${esc(p.fullNo)}</dd><dt>Site</dt><dd>${esc(p.site||"–")}</dd>
+      <dt>Visit</dt><dd>${esc(v.visitNo||"–")}</dd><dt>Date</dt><dd>${esc(fmtDate(v.datetime))}</dd>
+      <dt>By</dt><dd>${esc(v.by||"–")}</dd><dt>Instrument</dt><dd>${esc(inst||"–")}</dd><dt>Weather</dt><dd>${esc(weather||"–")}</dd></dl>
+      <a class="btn block" href="#/v/${v.id}/details">Edit visit details</a></div>`;
+  const fa = v.freshAir||{}, fw = Object.keys(checkFresh(fa)).length, fn = FRESH_FIELDS.filter(f=>filled(fa[f.k])).length;
+  h += `<h2>Readings</h2><div class="list">
+    <a class="item" href="#/v/${v.id}/fresh"><span class="tag fresh">Fresh air</span><div class="main"><div class="sub">${fn} of ${FRESH_FIELDS.length} filled${fw?` · <span class="pill warn-p">${fw} to check</span>`:""}</div>
+    <div class="prog"><i style="width:${fn/FRESH_FIELDS.length*100}%"></i></div></div><span class="chev">›</span></a>`;
+  h += locs.map(l=>{ const r=reading(v,l.id), s=locStatus(r);
+    return `<a class="item" href="#/v/${v.id}/l/${l.id}"><span class="tag">${esc(l.name)}</span><div class="main"><div class="sub">${s.skipped?esc(s.skipped):(s.n===s.total?"Complete":`${s.n} of ${s.total} filled`)}${s.warns?` · <span class="pill warn-p">${s.warns} to check</span>`:""}</div>
+      <div class="prog"><i style="width:${s.n/s.total*100}%"></i></div></div><span class="chev">›</span></a>`; }).join("");
+  h += `</div>`;
+  h += `<h2>Add locations</h2><div class="panel"><div class="addrow"><input type="text" id="addLoc" placeholder="e.g. WS01, WS04, BH2" autocapitalize="characters" autocomplete="off" aria-label="Location names" enterkeyhint="done"><button class="btn hv" data-act="add-loc">Add</button></div>
+    <p class="muted small" style="margin:6px 0 0">Added to the project, so they appear on every visit.</p></div>`;
+  h += `<h2>Finish</h2><div class="panel"><p class="small">Readings sync automatically. You can also email or download a spreadsheet of this visit.</p>${emailBlock("export-visit")}</div>`;
+  h += `<h2>Other</h2><div>${sliderHTML("Slide to delete this visit","del-visit")}</div>`;
+  $("#app").innerHTML = h;
+  bindAddLoc(()=>projects.get(v.projectNum)); bindEmailTo();
+}
 function renderDetails(v){
-  cur={visit:v,obj:v,kind:"details"};
+  cur={kind:"details", visitId:v.id, projNum:v.projectNum};
   bar("Visit details", `#/v/${v.id}`);
+  const p = projects.get(v.projectNum);
+  const dup = projVisits(v.projectNum).filter(x=>x.id!==v.id && x.visitNo && x.visitNo===v.visitNo).length;
   const t = (k,label,attrs="") => `<div class="field wide"><label for="f_${k}">${label}</label><input id="f_${k}" data-k="${k}" type="text" value="${esc(v[k])}" ${attrs}></div>`;
-  let h = `<div class="panel"><div class="grid">
-    ${t("project","Project number",'inputmode="text" autocomplete="off"')}
-    ${t("site","Site",'autocomplete="off"')}
+  $("#app").innerHTML = `<div class="panel"><div class="grid">
+    <div class="field wide"><label>Project</label><p style="margin:0"><span class="tag">${esc(p?p.fullNo:v.projectNum)}</span> ${esc(p&&p.site||"")}</p>
+      <button class="linkbtn" data-act="show-move" style="margin-top:6px">Move this visit to a different project</button>
+      <div id="moveBox" hidden style="margin-top:8px"><div class="addrow"><input type="text" id="mv_no" placeholder="e.g. 10172,GI" autocapitalize="characters" autocomplete="off" autocorrect="off" spellcheck="false" aria-label="Project to move to"><button class="btn hv" data-act="do-move">Move</button></div><p class="warn" id="mv_err"></p></div></div>
     <div class="field wide"><label for="f_datetime">Date and time of monitoring</label><input id="f_datetime" data-k="datetime" type="datetime-local" value="${esc(v.datetime)}"></div>
     ${t("by","Fieldwork by",'autocomplete="name"')}
-    <div class="field wide"><label>Visit number</label>${segHTML("visitNo",VISIT_NOS,v.visitNo)}</div>
+    <div class="field wide"><label>Visit number</label>${segHTML("visitNo",VISIT_NOS,v.visitNo)}<p class="warn" id="w_visitNo">${dup?`Another visit on this project is also marked ${esc(v.visitNo)}.`:""}</p></div>
     <div class="field wide"><label>Instrument</label>${segHTML("instrument",INSTRUMENTS,v.instrument)}</div>
     <div class="field wide" id="instOther" ${v.instrument==="Other"?"":"hidden"}><label for="f_instrumentOther">Other instrument</label><input id="f_instrumentOther" data-k="instrumentOther" type="text" value="${esc(v.instrumentOther)}"></div>
   </div></div>
@@ -349,133 +651,197 @@ function renderDetails(v){
     <div class="field wide"><label for="f_recentWeather">Recent weather <span class="unit">precipitation, wind speed etc.</span></label><textarea id="f_recentWeather" data-k="recentWeather" rows="3">${esc(v.recentWeather)}</textarea></div>
     <div class="field"><label for="f_airTemp">Air temp <span class="unit">°C</span></label><input id="f_airTemp" data-k="airTemp" type="text" inputmode="decimal" value="${esc(v.airTemp)}"></div>
     <div class="field wide"><label>Readings relative to</label>${segHTML("relativeTo",["Ground level","Top of pipe"],v.relativeTo)}</div>
-  </div></div>`;
-  $("#app").innerHTML = h;
+  </div></div>
+  <div style="margin-top:14px"><a class="btn block" href="#/v/${v.id}">Done</a></div>`;
 }
-
+function moveVisit(v){
+  const full=normProject($("#mv_no").value), m=full.match(PROJECT_RE), err=$("#mv_err");
+  if(!m){ err.textContent="Doesn't match the format, e.g. 10171,GI"; return; }
+  const to=m[1]; if(to===v.projectNum){ err.textContent="It's already in that project."; return; }
+  const from=projects.get(v.projectNum);
+  let target=projects.get(to);
+  if(!target) target=createDoc("projects", to, {fullNo:full, site:from?from.site:"", locations:{}, completed:false});
+  // Match locations by name, adding any the target project doesn't have.
+  const byName = {}; projLocs(target).forEach(l=>byName[l.name.toUpperCase()]=l.id);
+  const readings = {};
+  for(const [locId, r] of Object.entries(v.readings||{})){
+    const name = from && from.locations && from.locations[locId] ? from.locations[locId].name.toUpperCase() : null; if(!name) continue;
+    if(!byName[name]){ addLocationsTo(target, [name]); byName[name] = projLocs(target).find(l=>l.name.toUpperCase()===name).id; }
+    readings[byName[name]] = r;
+  }
+  v.projectNum = to; v.readings = readings;
+  queueUpdate("visits", v.id, "projectNum", to); queueUpdate("visits", v.id, "readings", readings); flush();
+  toast(`Moved to ${target.fullNo}`); location.hash = `#/v/${v.id}`;
+}
 function renderFresh(v){
-  cur={visit:v,obj:v.freshAir,kind:"fresh"};
+  cur={kind:"fresh", visitId:v.id, projNum:v.projectNum};
   bar("Fresh air", `#/v/${v.id}`);
-  $("#app").innerHTML = `<p class="muted small">Background readings taken in open air before monitoring.</p><div class="panel"><div class="grid">${FRESH_FIELDS.map(f=>fieldHTML(f,v.freshAir)).join("")}</div></div>
+  $("#app").innerHTML = `<p class="muted small">Background readings taken in open air before monitoring.</p><div class="panel"><div class="grid">${FRESH_FIELDS.map(f=>fieldHTML(f,v.freshAir||{})).join("")}</div></div>
     <div style="margin-top:14px"><a class="btn block" href="#/v/${v.id}">Done</a></div>`;
   paintWarnings();
 }
-
-function renderLoc(v, l){
-  cur={visit:v,obj:l,kind:"loc"};
+function renderLoc(v, locId){
+  const p = projects.get(v.projectNum), l = p.locations[locId];
+  cur={kind:"loc", visitId:v.id, projNum:v.projectNum, locId};
   bar(l.name, `#/v/${v.id}`);
-  const i = v.locations.indexOf(l), prev=v.locations[i-1], next=v.locations[i+1];
+  const locs = projLocs(p), i = locs.findIndex(x=>x.id===locId), prev=locs[i-1], next=locs[i+1];
+  const r = reading(v, locId), skipped = r.status && r.status!=="Monitored";
   let h = `<div class="panel"><div class="grid">
-    <div class="field wide"><label for="f_name">Location</label><input id="f_name" data-k="name" type="text" value="${esc(l.name)}" autocapitalize="characters" autocomplete="off"></div>`;
+    <div class="field wide"><label for="f_name">Location</label><input id="f_name" data-k="name" type="text" value="${esc(l.name)}" autocapitalize="characters" autocomplete="off"></div>
+    <div class="field wide"><label>Status this visit</label>${segHTML("status",LOC_STATUS,r.status||"Monitored")}</div>
+    <div class="grid wide" id="locFields" style="${skipped?"opacity:.45":""}">`;
   for(const g of LOC_GROUPS){
     h += `<div class="group-title">${esc(g.title)}${g.unit?` <span class="unit">${esc(g.unit)}</span>`:""}</div>`;
-    h += g.fields.map(f=>fieldHTML(g.unit?{...f}:f, l)).join("");
+    h += g.fields.map(f=>fieldHTML(f, r, prevValue(v, locId, f.k))).join("");
   }
-  h += `<div class="group-title">Notes</div><div class="field wide"><label for="f_notes" class="muted small" style="font-weight:500">Damage to tap, well or cover, open tap, pressure change, flow variation, anything else that could affect results.</label>
-    <textarea id="f_notes" data-k="notes" rows="4">${esc(l.notes)}</textarea></div>`;
-  h += `</div></div><div style="margin-top:18px">${sliderHTML(`Slide to delete ${l.name}`,"del-loc")}</div>`;
+  h += `</div><div class="group-title">Notes</div><div class="field wide"><label for="f_notes" class="muted small" style="font-weight:500">Damage to tap, well or cover, open tap, pressure change, flow variation, anything else that could affect results.</label>
+    <textarea id="f_notes" data-k="notes" rows="4">${esc(r.notes)}</textarea></div>`;
+  h += `</div></div><div style="margin-top:18px">${sliderHTML(`Slide to remove ${l.name} from project`,"del-loc")}</div>
+    <p class="muted small" style="margin-top:6px">Removing hides it from this and future visits. Readings already taken are kept.</p>`;
   $("#app").innerHTML = h + `<nav class="footer-nav">
     <button class="btn" data-act="go" data-href="${prev?`#/v/${v.id}/l/${prev.id}`:""}" ${prev?"":"disabled"}>‹ ${prev?esc(prev.name):"Previous"}</button>
     <button class="btn primary" data-act="go" data-href="${next?`#/v/${v.id}/l/${next.id}`:`#/v/${v.id}`}">${next?esc(next.name)+" ›":"All locations"}</button></nav>`;
   paintWarnings();
 }
 
-/* ---------- Actions ---------- */
-function newVisit(base){
-  const v = {id:uid(), created:Date.now(), updated:Date.now(), project:"", site:"", datetime:nowLocal(), by:"", visitNo:"", instrument:"", instrumentOther:"",
-    temp:"", sky:"", wet:"", wind:"", recentWeather:"", airTemp:"", relativeTo:"", freshAir:{}, locations:[], exportedAt:null};
-  if(base){
-    for(const k of ["project","site","by","instrument","instrumentOther","relativeTo"]) v[k]=base[k];
-    const i=VISIT_NOS.indexOf(base.visitNo); v.visitNo = i>=0&&i<VISIT_NOS.length-1 ? VISIT_NOS[i+1] : "";
-    v.locations = base.locations.map(l=>({id:uid(), name:l.name}));
-  }
-  db.visits[v.id]=v; saveNow(); return v;
+/* ---------- Visits from the previous version ---------- */
+const LEGACY_KEY = "gasfield.v1", IMPORTED_KEY = "gasfield.imported";
+function legacyVisits(){
+  try{ const d=JSON.parse(localStorage.getItem(LEGACY_KEY)||"null"); const done=new Set(JSON.parse(localStorage.getItem(IMPORTED_KEY)||"[]"));
+    return d && d.visits ? Object.values(d.visits).filter(v=>!done.has(v.id)) : []; }catch(e){ return []; }
 }
-function addLocations(v){
-  const inp=$("#addLoc"); const names=inp.value.split(/[,;\n]+/).map(s=>s.trim()).filter(Boolean);
-  if(!names.length){ inp.focus(); return; }
-  const have=new Set(v.locations.map(l=>l.name.toLowerCase())); const skipped=[];
-  for(const n of names){ if(have.has(n.toLowerCase())){ skipped.push(n); continue; } have.add(n.toLowerCase()); v.locations.push({id:uid(), name:n}); }
-  touch(v); saveNow(); renderVisit(v);
-  if(skipped.length) toast(`Already added: ${skipped.join(", ")}`);
-  else toast(`Added ${names.length} location${names.length===1?"":"s"}`);
+function renderImport(){
+  cur={kind:"import"};
+  bar("Previous version", "#/");
+  const list = legacyVisits();
+  if(!list.length){ $("#app").innerHTML=`<div class="panel empty"><p>All visits have been filed.</p></div>`; return; }
+  $("#app").innerHTML = `<p class="small">These were entered before projects existed and are only on this phone. Enter the full project number for each to file it and sync it. The original stays on this phone as a backup.</p>
+    <div class="list">${list.map(v=>`<div class="panel"><p><strong>${esc([v.project,v.site].filter(filled).join(" ")||"Untitled visit")}</strong>${v.visitNo?` · ${esc(v.visitNo)} visit`:""}<br><span class="muted small">${esc(fmtDate(v.datetime))} · ${(v.locations||[]).length} locations</span></p>
+      <div class="addrow"><input type="text" id="imp_${v.id}" value="${esc(normProject(v.project))}" placeholder="e.g. 10171,GI" autocapitalize="characters" autocomplete="off" autocorrect="off" spellcheck="false" aria-label="Full project number"><button class="btn hv" data-act="do-import" data-id="${v.id}">File</button></div><p class="warn" id="imperr_${v.id}"></p></div>`).join("")}</div>`;
 }
-function cellVal(v){ if(!filled(v)) return ""; return isNum(v) ? parseFloat(v) : String(v).trim(); }
-function buildWorkbook(v){
-  const inst = v.instrument==="Other" ? (v.instrumentOther||"Other") : v.instrument;
-  const weather = WEATHER.map(w=>v[w.k]).filter(filled).join(", ");
-  const cols = ["Location","Atmospheric pressure (mb)","Flow peak (l/hr)","Flow steady (l/hr)","CH4 peak (% v/v)","CH4 steady (% v/v)","CO2 peak (% v/v)","CO2 steady (% v/v)","Min O2 (% v/v)","H2S (ppm)","CO (ppm)","VOCs / PID (ppm)","Monitoring duration (mins)","Pipe/casing height (m)","Depth to water (m)","Depth to base of well (m)","Notes"];
-  const fa = v.freshAir||{};
-  const freshRow = ["Fresh air","","","",cellVal(fa.ch4),"",cellVal(fa.co2),"",cellVal(fa.o2),cellVal(fa.h2s),cellVal(fa.co),cellVal(fa.voc),"","","","",""];
-  const locRows = v.locations.map(l=>[l.name, ...LOC_FIELDS.map(f=>cellVal(l[f.k])), l.notes||""]);
-  const header = [["GAS AND GROUNDWATER MONITORING RECORD"],[],
-    ["Project number",v.project||""],["Site",v.site||""],["Date / time",fmtDate(v.datetime)],["Visit number",v.visitNo||""],["Fieldwork by",v.by||""],
-    ["Instrument",inst||""],["Weather",weather],["Recent weather",v.recentWeather||""],["Air temp (°C)",cellVal(v.airTemp)],["Readings relative to",v.relativeTo||""],[]];
-  const ws1 = XLSX.utils.aoa_to_sheet([...header, cols, freshRow, ...locRows]);
-  ws1["!cols"] = [{wch:22},...cols.slice(1,-1).map(()=>({wch:13})),{wch:50}];
-  const flatCols = ["Project number","Site","Visit number","Date / time","Fieldwork by","Instrument","Weather","Air temp (°C)","Readings relative to",...cols];
-  const meta = [v.project||"",v.site||"",v.visitNo||"",v.datetime||"",v.by||"",inst||"",weather,cellVal(v.airTemp),v.relativeTo||""];
-  const ws2 = XLSX.utils.aoa_to_sheet([flatCols, [...meta,...freshRow], ...locRows.map(r=>[...meta,...r])]);
-  ws2["!cols"] = flatCols.map(c=>({wch:Math.max(12,Math.min(30,c.length+2))}));
-  const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws1, "Field sheet");
-  XLSX.utils.book_append_sheet(wb, ws2, "Data");
-  return wb;
+function importLegacy(id){
+  const old = legacyVisits().find(v=>v.id===id); if(!old) return;
+  const full=normProject($("#imp_"+id).value), m=full.match(PROJECT_RE);
+  if(!m){ $("#imperr_"+id).textContent="Doesn't match the format, e.g. 10171,GI"; return; }
+  let p = projects.get(m[1]) || createDoc("projects", m[1], {fullNo:full, site:old.site||"", locations:{}, completed:false});
+  const names = (old.locations||[]).map(l=>String(l.name).trim().toUpperCase()).filter(Boolean);
+  addLocationsTo(p, names);
+  const byName={}; projLocs(p).forEach(l=>byName[l.name.toUpperCase()]=l.id);
+  const readings={};
+  for(const l of old.locations||[]){ const r={}; LOC_FIELDS.forEach(f=>{ if(filled(l[f.k])) r[f.k]=l[f.k]; }); if(filled(l.notes)) r.notes=l.notes; const key=byName[String(l.name).trim().toUpperCase()]; if(key) readings[key]=r; }
+  const fields = {}; ["visitNo","datetime","by","instrument","instrumentOther","temp","sky","wet","wind","recentWeather","airTemp","relativeTo"].forEach(k=>fields[k]=old[k]||"");
+  createDoc("visits", uid(), {...fields, projectNum:p.id, freshAir:old.freshAir||{}, readings, deleted:false, exportedAt:0});
+  try{ const done=JSON.parse(localStorage.getItem(IMPORTED_KEY)||"[]"); done.push(id); localStorage.setItem(IMPORTED_KEY, JSON.stringify(done)); }catch(e){}
+  toast(`Filed under ${p.fullNo}`); renderImport();
 }
-function fileName(v){
-  const d=(v.datetime||"").slice(0,10)||"undated";
-  const parts=[v.project||"project", v.site, v.visitNo?("visit-"+v.visitNo):"", d].filter(filled).join("_");
-  return parts.replace(/[^\w.\-]+/g,"-").replace(/-+/g,"-") + ".xlsx";
-}
-const EMAIL_DOMAIN = "@geosphere-environmental.co.uk";
+
+/* ---------- Export ---------- */
 function emailUser(){ try{ return localStorage.getItem("gasfield.emailTo") || ""; }catch(e){ return ""; } }
 function emailAddress(){ const u = emailUser().trim(); if(!u) return ""; return u.includes("@") ? u : u + EMAIL_DOMAIN; }
-function emailLink(v){
-  const subject = `Gas monitoring – ${visitTitle(v)}${v.visitNo ? " – " + v.visitNo + " visit" : ""}`;
-  const body = [`Gas monitoring results attached: ${fileName(v)}`, "",
-    `Project: ${v.project || "–"}`, `Site: ${v.site || "–"}`, `Visit: ${v.visitNo || "–"}`,
-    `Date: ${fmtDate(v.datetime)}`, `Fieldwork by: ${v.by || "–"}`,
-    `Locations: ${v.locations.map(l => l.name).join(", ") || "–"}`].join("\n");
-  return `mailto:${encodeURIComponent(emailAddress()).replace(/%40/g, "@")}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+function mailto(subject, lines){ return `mailto:${encodeURIComponent(emailAddress()).replace(/%40/g,"@")}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(lines.join("\n"))}`; }
+function cellVal(v){ if(!filled(v)) return ""; return isNum(v) ? parseFloat(v) : String(v).trim(); }
+function safeName(s){ return String(s||"").replace(/,/g,"-").replace(/[^\w.\-]+/g,"-").replace(/-+/g,"-").replace(/^-|-$/g,""); }
+function weatherText(v){ return WEATHER.map(w=>v[w.k]).filter(filled).join(", "); }
+function instText(v){ return v.instrument==="Other" ? (v.instrumentOther||"Other") : (v.instrument||""); }
+const XLSX_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+const DATA_COLS = ["Location","Status","Atmospheric pressure (mb)","Flow peak (l/hr)","Flow steady (l/hr)","CH4 peak (% v/v)","CH4 steady (% v/v)","CO2 peak (% v/v)","CO2 steady (% v/v)","Min O2 (% v/v)","H2S (ppm)","CO (ppm)","VOCs / PID (ppm)","Monitoring duration (mins)","Pipe/casing height (m)","Depth to water (m)","Depth to base of well (m)","Notes"];
+const META_COLS = ["Project number","Site","Visit number","Date / time","Fieldwork by","Instrument","Weather","Air temp (°C)","Readings relative to"];
+function visitMeta(v, p){ return [p.fullNo, p.site||"", v.visitNo||"", v.datetime||"", v.by||"", instText(v), weatherText(v), cellVal(v.airTemp), v.relativeTo||""]; }
+function freshRow(v){ const fa=v.freshAir||{}; return ["Fresh air","","","","",cellVal(fa.ch4),"",cellVal(fa.co2),"",cellVal(fa.o2),cellVal(fa.h2s),cellVal(fa.co),cellVal(fa.voc),"","","","",""]; }
+function locRow(name, r){ return [name, r.status&&r.status!=="Monitored"?r.status:"", ...LOC_FIELDS.map(f=>cellVal(r[f.k])), r.notes||""]; }
+function dataSheet(rows){ const ws=XLSX.utils.aoa_to_sheet([[...META_COLS,...DATA_COLS], ...rows]); ws["!cols"]=[...META_COLS,...DATA_COLS].map(c=>({wch:Math.max(12,Math.min(30,c.length+2))})); return ws; }
+function buildVisitWorkbook(v, p){
+  const header = [["GAS AND GROUNDWATER MONITORING RECORD"],[],
+    ["Project number",p.fullNo],["Site",p.site||""],["Date / time",fmtDate(v.datetime)],["Visit number",v.visitNo||""],["Fieldwork by",v.by||""],
+    ["Instrument",instText(v)],["Weather",weatherText(v)],["Recent weather",v.recentWeather||""],["Air temp (°C)",cellVal(v.airTemp)],["Readings relative to",v.relativeTo||""],[]];
+  const rows = [freshRow(v), ...projLocs(p).map(l=>locRow(l.name, reading(v,l.id)))];
+  const ws1 = XLSX.utils.aoa_to_sheet([...header, DATA_COLS, ...rows]);
+  ws1["!cols"] = [{wch:22},...DATA_COLS.slice(1,-1).map(()=>({wch:13})),{wch:50}];
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws1, "Field sheet");
+  XLSX.utils.book_append_sheet(wb, dataSheet(rows.map(r=>[...visitMeta(v,p), ...r])), "Data");
+  return wb;
 }
-function makeFile(v){
-  const out = XLSX.write(buildWorkbook(v), {bookType:"xlsx", type:"array"});
-  return new File([out], fileName(v), {type:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"});
+function lel(v){ if(!filled(v)) return ""; if(isNum(v)) return Math.round(parseFloat(v)*20*10)/10; const m=String(v).trim().match(/^<\s*(\d*\.?\d+)$/); return m ? "<"+(Math.round(parseFloat(m[1])*20*10)/10) : String(v).trim(); }
+function toDate(s){ const d=new Date(s); return isNaN(d) ? (s||"") : new Date(d.getFullYear(), d.getMonth(), d.getDate()); }
+function buildProjectWorkbook(p){
+  const vs = projVisits(p.id), wb = XLSX.utils.book_new(), used = new Set(), allRows = [];
+  const insts = [...new Set(vs.map(instText).filter(filled))].join("; ");
+  for(const l of projLocs(p)){
+    const aoa = [["GROUND GAS AND GROUNDWATER MONITORING DATA"],["Project Number:",p.fullNo],["Project Name:",p.site||"","","Date:",toDate(new Date())],["Exploratory Hole Location",l.name],[],
+      ["Return Visit #","Monitoring Date","Atmospheric Pressure (mb)","Methane (% v/v)","Methane (% LEL)","Carbon Dioxide (% v/v)","Oxygen (% v/v)","Flow Rate (l/hr)","H2S (ppm)","CO (ppm)","VOC (ppm)","Water Level (m)","Base of Well (m)","Weather Conditions","Comments / Pressure Rise or Fall"]];
+    let lastP = null;
+    for(const v of vs){
+      const r = reading(v, l.id), skipped = r.status && r.status!=="Monitored", pr = num(r.pressure);
+      const comments = [];
+      if(skipped) comments.push(r.status);
+      if(pr!==null && lastP!==null && pr<lastP) comments.push("Falling pressure");
+      if(v.relativeTo==="Top of pipe") comments.push("Depths from top of pipe");
+      if(filled(r.notes)) comments.push(r.notes.trim());
+      aoa.push([(v.visitNo||"?")+" visit", toDate(v.datetime), skipped?"":cellVal(r.pressure), skipped?"":cellVal(r.ch4Peak), skipped?"":lel(r.ch4Peak), skipped?"":cellVal(r.co2Peak), skipped?"":cellVal(r.o2Min), skipped?"":cellVal(r.flowPeak),
+        skipped?"":cellVal(r.h2s), skipped?"":cellVal(r.co), skipped?"":cellVal(r.voc), skipped?"":cellVal(r.depthWater), skipped?"":cellVal(r.depthBase), weatherText(v), comments.join(". ")]);
+      if(pr!==null) lastP = pr;
+      allRows.push([...visitMeta(v,p), ...locRow(l.name, r)]);
+    }
+    aoa.push([],["Instruments Used:",insts],["Methane, carbon dioxide and flow are peak readings. nm = not measured."]);
+    const ws = XLSX.utils.aoa_to_sheet(aoa, {cellDates:true, dateNF:"dd/mm/yyyy"});
+    ws["!cols"] = [{wch:16},{wch:13},{wch:13},{wch:10},{wch:10},{wch:12},{wch:10},{wch:10},{wch:8},{wch:8},{wch:8},{wch:12},{wch:12},{wch:26},{wch:40}];
+    let nm = String(l.name).replace(/[\\\/\?\*\[\]:]/g,"-").slice(0,31) || "Location"; let n=2; while(used.has(nm.toUpperCase())) nm = nm.slice(0,28)+"-"+(n++); used.add(nm.toUpperCase());
+    XLSX.utils.book_append_sheet(wb, ws, nm);
+  }
+  vs.forEach(v=>allRows.push([...visitMeta(v,p), ...freshRow(v)]));
+  XLSX.utils.book_append_sheet(wb, dataSheet(allRows), "All data");
+  return wb;
 }
 function downloadFile(file){
   const a = document.createElement("a"); a.href = URL.createObjectURL(file); a.download = file.name; document.body.appendChild(a); a.click();
   setTimeout(()=>{ URL.revokeObjectURL(a.href); a.remove(); }, 4000);
 }
-async function exportVisit(v, mode){
-  if(!window.XLSX){ toast("Spreadsheet export isn't loaded. Open the page once with signal, then try again."); return; }
-  saveNow();
-  const file = makeFile(v);
-  // Where the phone allows it (e.g. iPhone), the share sheet attaches the file straight to an email.
-  if(mode === "email" && navigator.share && navigator.canShare && navigator.canShare({files:[file]})){
-    try{ await navigator.share({files:[file], title:file.name}); markExported(v); return; }
-    catch(e){ if(e && e.name === "AbortError"){ toast("Cancelled. Nothing was exported."); return; } }
+async function exportFile(file, mode, subject, lines){
+  if(mode==="email" && navigator.share && navigator.canShare && navigator.canShare({files:[file]})){
+    try{ await navigator.share({files:[file], title:file.name}); return true; }
+    catch(e){ if(e && e.name==="AbortError"){ toast("Cancelled. Nothing was exported."); return false; } }
   }
-  // Otherwise (e.g. Chrome on Android): download, then offer a pre-filled email to attach it to.
   downloadFile(file);
-  markExported(v);
-  if(mode === "email") showEmailStep(v);
+  if(mode==="email"){
+    const box=$("#emailStep"); if(box){ $("#emailFile").textContent=file.name; box.querySelector("a").href=mailto(subject, lines); box.hidden=false; clearTimeout(toastTimer); $("#toast").hidden=true; box.scrollIntoView({block:"nearest",behavior:"smooth"}); }
+  } else toast("Downloaded "+file.name);
+  return true;
 }
-function showEmailStep(v){
-  const box = $("#emailStep"); if(!box) return;
-  box.querySelector("a").href = emailLink(v); box.hidden = false;
-  clearTimeout(toastTimer); $("#toast").hidden = true; // keep the Open email button clear
-  box.scrollIntoView({block:"nearest", behavior:"smooth"});
+function exportVisit(v, mode){
+  if(!window.XLSX){ toast("Spreadsheet export isn't loaded. Open the app once with signal."); return; }
+  flush(); const p = projects.get(v.projectNum);
+  const out = XLSX.write(buildVisitWorkbook(v,p), {bookType:"xlsx", type:"array"});
+  const name = [safeName(p.fullNo), safeName(p.site), v.visitNo?"visit-"+v.visitNo:"", (v.datetime||"").slice(0,10)].filter(filled).join("_")+".xlsx";
+  exportFile(new File([out], name, {type:XLSX_TYPE}), mode, `Gas monitoring – ${p.fullNo} ${p.site||""} – ${v.visitNo||""} visit`.replace(/\s+/g," "),
+    [`Gas monitoring results attached: ${name}`, "", `Project: ${p.fullNo}`, `Site: ${p.site||"–"}`, `Visit: ${v.visitNo||"–"}`, `Date: ${fmtDate(v.datetime)}`, `Fieldwork by: ${v.by||"–"}`, `Locations: ${projLocs(p).map(l=>l.name).join(", ")||"–"}`]);
 }
-function markExported(v){ v.exportedAt = Date.now(); if(v.updated>v.exportedAt) v.exportedAt=v.updated; saveNow(); renderVisit(v); toast("Exported "+fileName(v)); }
+function exportProject(p, mode){
+  if(!window.XLSX){ toast("Spreadsheet export isn't loaded. Open the app once with signal."); return; }
+  flush();
+  const out = XLSX.write(buildProjectWorkbook(p), {bookType:"xlsx", type:"array", cellDates:true});
+  const name = [safeName(p.fullNo), safeName(p.site), "gas-monitoring-compiled", nowLocal().slice(0,10)].filter(filled).join("_")+".xlsx";
+  const vs = projVisits(p.id);
+  exportFile(new File([out], name, {type:XLSX_TYPE}), mode, `Gas monitoring compiled – ${p.fullNo} ${p.site||""}`.trim(),
+    [`Compiled gas monitoring results attached: ${name}`, "", `Project: ${p.fullNo}`, `Site: ${p.site||"–"}`, `Visits: ${vs.map(v=>`${v.visitNo||"?"} (${fmtDate(v.datetime,false)})`).join(", ")||"–"}`, `Locations: ${projLocs(p).map(l=>l.name).join(", ")||"–"}`]);
+}
 
 /* ---------- Events ---------- */
+function bindAddLoc(getP){
+  const go = ()=>{ const inp=$("#addLoc"); const names=parseNames(inp.value); if(!names.length){ inp.focus(); return; } addLocationsTo(getP(), names); route(); };
+  $("#addLoc").addEventListener("keydown", e=>{ if(e.key==="Enter"){ e.preventDefault(); go(); } });
+  bindAddLoc.go = go;
+}
+function bindEmailTo(){
+  $("#emailTo").addEventListener("input", e=>{ try{ localStorage.setItem("gasfield.emailTo", e.target.value.trim()); }catch(err){} $("#emailSuffix").hidden = e.target.value.includes("@"); });
+}
 document.addEventListener("input", e=>{
-  const k = e.target.dataset && e.target.dataset.k; if(!k || !cur.obj) return;
-  cur.obj[k] = e.target.value;
+  const k = e.target.dataset && e.target.dataset.k; if(!k) return;
+  applyEdit(k, e.target.value);
   if(cur.kind==="loc" && k==="name"){ const h=$("#bar h1"); if(h) h.textContent=e.target.value||"Unnamed"; }
-  touch(cur.visit); paintStatus(); paintWarnings();
+  paintWarnings();
 });
-document.addEventListener("change", e=>{ if(e.target.dataset && e.target.dataset.k) saveNow(); });
+document.addEventListener("change", e=>{ if(e.target.dataset && e.target.dataset.k) flush(); });
 document.addEventListener("keydown", e=>{
   if(e.key!=="Enter" || !e.target.matches("input[data-k]")) return;
   e.preventDefault(); const ins=[...document.querySelectorAll("main input[data-k], main textarea[data-k]")]; const i=ins.indexOf(e.target);
@@ -483,39 +849,51 @@ document.addEventListener("keydown", e=>{
 });
 document.addEventListener("click", e=>{
   const chip = e.target.closest(".chip");
-  if(chip && cur.obj){ const k=chip.dataset.for, inp=$("#f_"+k); cur.obj[k]=chip.dataset.chip; inp.value=chip.dataset.chip; touch(cur.visit); saveNow(); paintWarnings(); return; }
+  if(chip){ const k=chip.dataset.for, inp=$("#f_"+k); inp.value=chip.dataset.chip; applyEdit(k, chip.dataset.chip); flush(); paintWarnings(); return; }
   const segBtn = e.target.closest(".seg button");
-  if(segBtn && cur.obj){ const seg=segBtn.parentElement, k=seg.dataset.set, val=segBtn.dataset.val;
-    cur.obj[k] = cur.obj[k]===val ? "" : val;
-    seg.querySelectorAll("button").forEach(b=>b.setAttribute("aria-pressed", String(b.dataset.val===cur.obj[k])));
-    if(k==="instrument"){ const o=$("#instOther"); if(o) o.hidden = cur.obj[k]!=="Other"; }
-    touch(cur.visit); saveNow(); return; }
+  if(segBtn){ const seg=segBtn.parentElement, k=seg.dataset.set, o=curObj(); if(!o) return;
+    let val = (o[k]===segBtn.dataset.val) ? "" : segBtn.dataset.val;
+    if(k==="status" && !val) val="Monitored";
+    applyEdit(k, val); flush();
+    seg.querySelectorAll("button").forEach(b=>b.setAttribute("aria-pressed", String(b.dataset.val===val)));
+    if(k==="instrument"){ const x=$("#instOther"); if(x) x.hidden = val!=="Other"; }
+    if(k==="status"){ const f=$("#locFields"); if(f) f.style.opacity = val==="Monitored" ? "" : ".45"; }
+    if(k==="visitNo"){ const dup=projVisits(cur.projNum).filter(x=>x.id!==cur.visitId && x.visitNo && x.visitNo===val).length; $("#w_visitNo").textContent = dup?`Another visit on this project is also marked ${val}.`:""; }
+    return; }
   const btn = e.target.closest("[data-act]"); if(!btn) return;
-  const act = btn.dataset.act, v = cur.visit;
+  const act = btn.dataset.act, v = curVisit(), p = curProject();
   if(act==="go"){ if(btn.dataset.href) location.hash = btn.dataset.href; }
-  else if(act==="reload"){ saveNow(); location.reload(); }
-  else if(act==="new-visit"){ const nv=newVisit(); location.hash=`#/v/${nv.id}/details`; }
-  else if(act==="add-loc"){ addLocations(v); }
-  else if(act==="export-email"){ exportVisit(v,"email"); }
-  else if(act==="export-dl"){ exportVisit(v,"download"); }
-  else if(act==="next-visit"){ const nv=newVisit(v); location.hash=`#/v/${nv.id}/details`; toast("New visit started with the same locations"); }
+  else if(act==="reload"){ flush(); location.reload(); }
+  else if(act==="do-signin") doSignIn();
+  else if(act==="do-create") doCreate();
+  else if(act==="do-reset") doReset();
+  else if(act==="show-create") renderSignIn("create");
+  else if(act==="show-signin") renderSignIn("in");
+  else if(act==="verify-continue") verifyContinue();
+  else if(act==="verify-resend"){ FB.sendEmailVerification(user, {url: location.href.split("#")[0]}).then(()=>toast("Sent again. Check your inbox.")).catch(authError); }
+  else if(act==="sign-out"){ flush(); FB.signOut(auth); location.hash="#/"; }
+  else if(act==="toggle-completed"){ showCompleted=!showCompleted; $("#plist").innerHTML=projectListHTML(); }
+  else if(act==="create-project") createProject();
+  else if(act==="toggle-project-done"){ applyEdit("completed", !p.completed); flush(); toast(p.completed?"Project marked completed":"Project reopened"); route(); }
+  else if(act==="new-visit") newVisit(p);
+  else if(act==="add-loc") bindAddLoc.go();
+  else if(act==="show-move"){ const b=$("#moveBox"); b.hidden=!b.hidden; }
+  else if(act==="do-move") moveVisit(v);
+  else if(act==="export-visit") exportVisit(v, btn.dataset.mode);
+  else if(act==="export-project") exportProject(p, btn.dataset.mode);
+  else if(act==="do-import") importLegacy(btn.dataset.id);
 });
 
-/* ---------- Slide to delete ---------- */
-function sliderHTML(label, act){
-  return `<div class="slide" data-slide="${act}"><span class="slide-label">${esc(label)} →</span>
-    <div class="slide-thumb" role="slider" tabindex="0" aria-label="${esc(label)}. Drag right, or press the right arrow key, to delete." aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">›</div></div>`;
-}
+/* ---------- Slide to confirm ---------- */
 function slideDone(act){
-  const v = cur.visit; if(!v) return;
+  const v = curVisit(); if(!v) return false;
   if(act==="del-loc"){
-    const l = cur.obj; v.locations = v.locations.filter(x=>x!==l); touch(v); saveNow();
-    location.hash = `#/v/${v.id}`; toast(`Deleted ${l.name}`);
+    const p = projects.get(v.projectNum), name = p.locations[cur.locId].name;
+    p.locations[cur.locId].removed = true; queueUpdate("projects", p.id, `locations.${cur.locId}.removed`, true); flush();
+    location.hash = `#/v/${v.id}`; toast(`Removed ${name} from the project`);
   } else if(act==="del-visit"){
-    if(!v.exportedAt || v.updated>v.exportedAt){
-      if(!confirm("This visit has changes that haven't been exported. Delete it from this phone anyway?")){ return false; }
-    }
-    delete db.visits[v.id]; saveNow(); location.hash = "#/"; toast("Visit deleted");
+    v.deleted = true; queueUpdate("visits", v.id, "deleted", true); flush(); visits.delete(v.id);
+    location.hash = `#/p/${v.projectNum}`; toast("Visit deleted");
   }
   return true;
 }
@@ -528,62 +906,56 @@ function resetSlide(t){ t.classList.add("anim"); setSlide(t, 0, 1); }
 let drag = null;
 document.addEventListener("pointerdown", e=>{
   const t = e.target.closest(".slide-thumb"); if(!t) return;
-  e.preventDefault();
-  const s = t.parentElement;
+  e.preventDefault(); const s = t.parentElement;
   drag = {t, s, startX:e.clientX, max:s.clientWidth - t.offsetWidth - 8, x:0};
   t.classList.remove("anim"); t.setPointerCapture(e.pointerId);
 });
-document.addEventListener("pointermove", e=>{
-  if(!drag) return;
-  drag.x = Math.max(0, Math.min(drag.max, e.clientX - drag.startX));
-  setSlide(drag.t, drag.x, drag.max);
-});
-function endDrag(){
-  if(!drag) return; const d = drag; drag = null;
-  if(d.x >= d.max*0.92){ setSlide(d.t, d.max, d.max); if(slideDone(d.s.dataset.slide)===false) resetSlide(d.t); }
-  else resetSlide(d.t);
-}
-document.addEventListener("pointerup", endDrag);
-document.addEventListener("pointercancel", endDrag);
+document.addEventListener("pointermove", e=>{ if(!drag) return; drag.x = Math.max(0, Math.min(drag.max, e.clientX - drag.startX)); setSlide(drag.t, drag.x, drag.max); });
+function endDrag(){ if(!drag) return; const d = drag; drag = null;
+  if(d.x >= d.max*0.92){ setSlide(d.t, d.max, d.max); if(slideDone(d.s.dataset.slide)===false) resetSlide(d.t); } else resetSlide(d.t); }
+document.addEventListener("pointerup", endDrag); document.addEventListener("pointercancel", endDrag);
 document.addEventListener("keydown", e=>{
   const t = e.target.closest && e.target.closest(".slide-thumb"); if(!t) return;
   if(e.key!=="ArrowRight" && e.key!=="ArrowLeft") return;
-  e.preventDefault();
-  const max = t.parentElement.clientWidth - t.offsetWidth - 8;
-  const now = Number(t.getAttribute("aria-valuenow"))/100*max;
-  const x = Math.max(0, Math.min(max, now + (e.key==="ArrowRight" ? max/4 : -max/4)));
-  t.classList.add("anim"); setSlide(t, x, max);
-  if(x >= max*0.99){ if(slideDone(t.parentElement.dataset.slide)===false) resetSlide(t); }
+  e.preventDefault(); const max = t.parentElement.clientWidth - t.offsetWidth - 8;
+  const now = Number(t.getAttribute("aria-valuenow"))/100*max, x = Math.max(0, Math.min(max, now + (e.key==="ArrowRight" ? max/4 : -max/4)));
+  t.classList.add("anim"); setSlide(t, x, max); if(x >= max*0.99 && slideDone(t.parentElement.dataset.slide)===false) resetSlide(t);
 });
 
 /* ---------- Router ---------- */
-function route(){
+function route(keepScroll){
+  if(!user) return renderSignIn();
+  if(!user.emailVerified) return renderVerify();
+  const y = window.scrollY;
   const p = (location.hash.slice(1)||"/").split("/").filter(Boolean);
-  window.scrollTo(0,0);
-  if(p[0]==="v" && db.visits[p[1]]){
-    const v=db.visits[p[1]]; v.freshAir = v.freshAir||{};
-    if(p[2]==="l"){ const l=v.locations.find(x=>x.id===p[3]); if(l) return renderLoc(v,l); }
-    if(p[2]==="fresh") return renderFresh(v);
-    if(p[2]==="details") return renderDetails(v);
-    return renderVisit(v);
+  if(!keepScroll) window.scrollTo(0,0);
+  const ready = loaded.projects && loaded.visits;
+  if(p[0]==="newproject") renderNewProject();
+  else if(p[0]==="import") renderImport();
+  else if(ready && p[0]==="p" && projects.has(p[1])){ const pr=projects.get(p[1]); p[2]==="edit" ? renderProjectEdit(pr) : renderProject(pr); }
+  else if(ready && p[0]==="v" && visits.has(p[1])){
+    const v=visits.get(p[1]);
+    if(p[2]==="l" && projects.has(v.projectNum) && (projects.get(v.projectNum).locations||{})[p[3]]) renderLoc(v,p[3]);
+    else if(p[2]==="fresh") renderFresh(v);
+    else if(p[2]==="details") renderDetails(v);
+    else renderVisit(v);
   }
-  renderHome();
+  else renderHome();
+  if(keepScroll) window.scrollTo(0,y);
 }
-window.addEventListener("hashchange", route);
-window.addEventListener("storage", e=>{ if(e.key===KEY){ db=load(); route(); } });
-route();
+window.addEventListener("hashchange", ()=>route());
 
+/* ---------- Start ---------- */
+startFirebase();
 if("serviceWorker" in navigator && location.protocol==="https:"){
   window.addEventListener("load", async ()=>{
     try{
       const reg = await navigator.serviceWorker.register("sw.js", {updateViaCache:"none"});
-      // Look for a new version whenever the app comes back to the foreground.
       document.addEventListener("visibilitychange", ()=>{ if(!document.hidden) reg.update().catch(()=>{}); });
       let hadController = !!navigator.serviceWorker.controller;
       navigator.serviceWorker.addEventListener("controllerchange", ()=>{
-        if(!hadController){ hadController = true; return; } // first install, nothing to announce
-        saveNow();
-        if(document.getElementById("upd")) return;
+        if(!hadController){ hadController = true; return; }
+        flush(); if(document.getElementById("upd")) return;
         const d = document.createElement("div"); d.id = "upd"; d.className = "update";
         d.innerHTML = '<span>A new version is ready. Your readings are saved.</span><button class="btn hv" data-act="reload">Reload</button>';
         document.body.appendChild(d);
@@ -591,6 +963,7 @@ if("serviceWorker" in navigator && location.protocol==="https:"){
     }catch(e){}
   });
 }
+
 </script>
 </body>
 </html>
