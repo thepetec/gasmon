@@ -123,6 +123,8 @@ button:focus-visible,a:focus-visible{outline:3px solid var(--hv);outline-offset:
 .emailrow input{flex:1 1 120px;min-width:0}
 .suffix{font-weight:600;color:var(--muted);font-size:15px;overflow-wrap:anywhere}
 .suffix[hidden]{display:none}
+.panel.quiet{background:transparent}
+.btn.small-btn{min-height:44px;font-size:15px;padding:8px 14px;border-width:1px;border-color:var(--line);font-weight:600}
 .emailstep{margin-top:12px;padding:12px;border:2px dashed var(--hv);border-radius:10px}
 .emailstep[hidden]{display:none}
 
@@ -160,7 +162,7 @@ button:focus-visible,a:focus-visible{outline:3px solid var(--hv);outline-offset:
 <script src="ggt012.js"></script>
 <script>
 "use strict";
-const APP_VERSION = "2.3"; // keep in step with CACHE in sw.js
+const APP_VERSION = "2.4"; // keep in step with CACHE in sw.js
 
 /* ---------- Settings ---------- */
 const FIREBASE_CONFIG = {
@@ -606,7 +608,8 @@ function renderProject(p){
   h += `<h2>Monitoring locations</h2><div class="panel"><p class="small">${locs.length ? locs.map(l=>`<span class="tag" style="margin:0 6px 6px 0">${esc(l.name)}</span>`).join("") : `<span class="muted">None yet.</span>`}</p>
     <div class="addrow"><input type="text" id="addLoc" placeholder="e.g. WS01, WS04, BH2" autocapitalize="characters" autocomplete="off" aria-label="Location names" enterkeyhint="done"><button class="btn hv" data-act="add-loc">Add</button></div>
     <p class="muted small" style="margin:6px 0 0">Locations are shared by every visit to this project. Rename or remove one from its reading page.</p></div>`;
-  h += `<h2>Return visits spreadsheet (GGT012)</h2><div class="panel"><p class="small">Fills the GGT012 template with one tab per location, including the graphs. Project name and date of installation are left to complete by hand.${locs.length>10?` This project has ${locs.length} locations, so it comes as ${Math.ceil(locs.length/10)} files of up to 10 tabs.`:""}</p>${emailBlock("export-ggt")}
+  h += `<h2>Completed spreadsheet (GGT012)</h2><div class="panel"><p class="small"><strong>Download completed Gas Monitoring spreadsheet with all data</strong></p>
+    <p class="muted small">One tab per location, with graphs. Project name and date of installation are left to complete by hand.${locs.length>10?` This project has ${locs.length} locations, so it comes as ${Math.ceil(locs.length/10)} files of up to 10 tabs.`:""}</p>${emailBlock("export-ggt")}
     <button class="btn block" style="margin-top:10px" data-act="export-project" data-mode="download">Download all raw data</button></div>`;
   $("#app").innerHTML = h;
   bindAddLoc(()=>p); bindEmailTo();
@@ -661,7 +664,9 @@ function renderVisit(v){
   h += `</div>`;
   h += `<h2>Add locations</h2><div class="panel"><div class="addrow"><input type="text" id="addLoc" placeholder="e.g. WS01, WS04, BH2" autocapitalize="characters" autocomplete="off" aria-label="Location names" enterkeyhint="done"><button class="btn hv" data-act="add-loc">Add</button></div>
     <p class="muted small" style="margin:6px 0 0">Added to the project, so they appear on every visit.</p></div>`;
-  h += `<h2>Finish</h2><div class="panel"><p class="small">Readings sync automatically. You can also email or download a spreadsheet of this visit.</p>${emailBlock("export-visit")}</div>`;
+  h += `<h2>Raw data</h2><div class="panel quiet"><p class="small muted">Readings sync automatically. You can also download raw data for this visit.</p>
+    <div class="row"><button class="btn small-btn" data-act="export-visit" data-mode="download">Download raw data</button><button class="btn small-btn" data-act="export-visit" data-mode="email">Email raw data</button></div>
+    <div class="emailstep" id="emailStep" hidden><p><strong>Saved to Downloads.</strong> Open the email, tap the paperclip and attach <strong id="emailFile"></strong>.</p><a class="btn hv block" href="#">Open email</a></div></div>`;
   h += `<h2>Other</h2><div>${sliderHTML("Slide to delete this visit","del-visit")}</div>`;
   $("#app").innerHTML = h;
   bindAddLoc(()=>projects.get(v.projectNum)); bindEmailTo();
@@ -952,6 +957,7 @@ function bindAddLoc(getP){
   bindAddLoc.go = go;
 }
 function bindEmailTo(){
+  if(!$("#emailTo")) return;
   $("#emailTo").addEventListener("input", e=>{ try{ localStorage.setItem("gasfield.emailTo", e.target.value.trim()); }catch(err){} $("#emailSuffix").hidden = e.target.value.includes("@"); });
 }
 document.addEventListener("input", e=>{
