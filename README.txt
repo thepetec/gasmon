@@ -1,31 +1,40 @@
-GAS MONITORING FIELD SHEET - SETUP
+GAS MONITORING FIELD SHEET - VERSION 2 SETUP
 
-What this is
-A web page that works on Android and iPhone without any account. Readings are saved on the
-phone as they are typed and stay there until exported. Nothing is sent anywhere else.
+FILES TO UPLOAD TO GITHUB (all together, same folder):
+  index.html, sw.js, firebase.js, xlsx.full.min.js, jszip.min.js, ggt012.js, weather.js, GGT012.xltx,
+  manifest.webmanifest,
+  icon-192.png, icon-512.png, apple-touch-icon.png
+Do NOT upload firestore.rules or this README (harmless if you do, but not needed).
 
-Hosting (one-off, done by one person)
-Upload all files in this folder, unchanged and together, to any static web host that serves
-over HTTPS. For example:
-  - GitHub Pages (free): create a repository, upload the files, Settings > Pages > deploy from main.
-  - Netlify, Cloudflare Pages, or your company website.
-Only the person uploading needs an account with the host. Field staff just need the link.
+FIREBASE RULES (publish again after this update)
+Firebase console > Firestore Database > Rules: replace everything with the contents of
+firestore.rules and Publish. These stop records ever being permanently deleted.
+When moving to a company account, delete the line with the test gmail address, both here
+and in EXTRA_ALLOWED_EMAILS near the top of the script in index.html.
 
-Each field user, once, with signal
-  1. Open the link.
-  2. iPhone: Safari > Share > Add to Home Screen.
-     Android: Chrome > menu > Add to Home screen / Install app.
-  3. Always open it from the home screen icon. After that it opens without signal.
+FIRST USE ON EACH PHONE (needs signal)
+  1. Open https://thepetec.github.io/gasmon/ and add it to the home screen.
+  2. Create an account with a work email, then confirm it from the email link.
+  3. After that, sign-in is remembered and the app works without signal.
 
-Important
-  - Data lives on the phone that entered it, in that app/browser only.
-  - Export at the end of each visit (Share or Download) and save to Egnyte or email.
-  - Deleting the home screen app or clearing browser data deletes unexported visits.
-  - On iPhone, the home screen app and Safari keep separate data: always use the icon.
+HOW SYNC WORKS
+Everything is saved on the phone first, then synced when there is signal. The top bar
+shows "Synced", "Syncing..." or "On phone - will sync". Other phones see changes once
+both have had signal.
 
-Updating the tool
+RELEASING AN UPDATE
 Change APP_VERSION near the top of the script in index.html and CACHE in sw.js to the same
-new number (e.g. 1.3 / gasfield-1.3), then upload both over the old files.
-Phones with signal load the new version next time the app is opened; if the app is already
-open, a "new version is ready" bar appears with a Reload button. The version number is shown
-at the bottom of the home screen. GitHub Pages can take a few minutes to publish changes.
+new number, then upload both.
+
+UPDATING THE GGT012 TEMPLATE
+If the return visits template is revised, save it as GGT012.xltx (same name), upload it
+over the old one and bump the version numbers as above. The new template must keep the
+same layout: tabs Hole 1-10, visit rows 9-14 in columns C-Q, instruments in E15,
+remarks in E16/E17.
+
+SHARED WITH OTHER GEOSPHERE TOOLS (from version 2.8)
+Projects (number, letter codes, site name) are shared by all field tools that use this Firebase
+project, e.g. the planned DRITs tool. Each tool keeps its own records (visits, dritTests) and its
+own "completed" flag (gasCompleted for this tool). Any tool hosted under thepetec.github.io
+shares the same sign-in automatically. Use a different cache name prefix and storage key prefix
+in each tool (this one uses "gasfield-" and "gasfield.").

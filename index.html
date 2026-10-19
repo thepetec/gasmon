@@ -164,7 +164,7 @@ button:focus-visible,a:focus-visible{outline:3px solid var(--hv);outline-offset:
 <script src="weather.js"></script>
 <script>
 "use strict";
-const APP_VERSION = "2.7"; // keep in step with CACHE in sw.js
+const APP_VERSION = "2.8"; // keep in step with CACHE in sw.js
 
 /* ---------- Settings ---------- */
 const FIREBASE_CONFIG = {
@@ -235,6 +235,10 @@ function toast(msg, ms=2600){ const t=$("#toast"); t.textContent=msg; t.hidden=f
 function normProject(s){ return String(s||"").toUpperCase().replace(/\s+/g,""); }
 function setPath(obj, path, value){ const ks=path.split("."); let o=obj; for(let i=0;i<ks.length-1;i++){ if(typeof o[ks[i]]!=="object"||o[ks[i]]===null) o[ks[i]]={}; o=o[ks[i]]; } o[ks[ks.length-1]]=value; }
 function msOf(v){ const t = v && (v.toMillis ? v.toMillis() : (v.seconds ? v.seconds*1000 : v)); return typeof t==="number" ? t : 0; }
+// Projects are shared by every Geosphere field tool. Each tool keeps its own "completed" flag,
+// so finishing gas monitoring doesn't hide the project from the other tools.
+// Older projects only have the original shared "completed" field, which is read as the gas flag.
+function gasDone(p){ return !!(p && (p.gasCompleted ?? p.completed)); }
 function emailAllowed(e){ e=String(e||"").toLowerCase(); return e.endsWith(EMAIL_DOMAIN) || EXTRA_ALLOWED_EMAILS.includes(e); }
 
 /* ---------- Firebase ---------- */
@@ -545,7 +549,7 @@ function projectListHTML(){
   if(!loaded.projects || !loaded.visits) return `<div class="panel empty"><p class="muted">Loading…</p></div>`;
   const q = homeSearch.trim().toLowerCase();
   const all = [...projects.values()].filter(p => !q || String(p.fullNo).toLowerCase().includes(q) || String(p.site||"").toLowerCase().includes(q));
-  const live = all.filter(p=>!p.completed), done = all.filter(p=>p.completed);
+  const live = all.filter(p=>!gasDone(p)), done = all.filter(p=>gasDone(p));
   const sortFn = (a,b) => String(lastActivity(b)||"").localeCompare(String(lastActivity(a)||"")) || String(b.id).localeCompare(String(a.id));
   const item = p => { const vs=projVisits(p.id), last=vs[vs.length-1];
     return `<a class="item" href="#/p/${p.id}"><span class="tag">${esc(p.fullNo)}</span><div class="main"><div class="title">${esc(p.site||"No site name")}</div>
@@ -577,7 +581,7 @@ function createProject(){
   const n = m[1];
   if(projects.has(n)){ const p=projects.get(n); toast(`Project ${n} already exists as ${p.fullNo}. Opening it.`, 4000); location.hash=`#/p/${n}`; return; }
   const locs = {}; parseNames($("#np_locs").value).forEach((name,i)=>{ locs[uid()] = {name, order:i}; });
-  createDoc("projects", n, {fullNo:full, site:$("#np_site").value.trim(), locations:locs, completed:false});
+  createDoc("projects", n, {fullNo:full, site:$("#np_site").value.trim(), locations:locs, gasCompleted:false});
   location.hash = `#/p/${n}`;
 }
 function parseNames(s){ const seen=new Set(), out=[]; String(s||"").split(/[,;\n]+/).map(x=>x.trim().toUpperCase()).filter(Boolean).forEach(x=>{ if(!seen.has(x)){ seen.add(x); out.push(x); } }); return out; }
@@ -598,7 +602,7 @@ function renderProject(p){
   cur={kind:"project", projNum:p.id};
   bar(p.fullNo, "#/");
   const vs = projVisits(p.id), locs = projLocs(p);
-  let h = `<div class="panel summary"><dl><dt>Project</dt><dd>${esc(p.fullNo)}</dd><dt>Site</dt><dd>${esc(p.site||"–")}</dd><dt>Status</dt><dd>${p.completed?"Completed":"Ongoing"}</dd></dl>
+  let h = `<div class="panel summary"><dl><dt>Project</dt><dd>${esc(p.fullNo)}</dd><dt>Site</dt><dd>${esc(p.site||"–")}</dd><dt>Status</dt><dd>${gasDone(p)?"Gas monitoring completed":"Ongoing"}</dd></dl>
     <a class="btn block" href="#/p/${p.id}/edit">Edit project</a></div>`;
   h += `<h2>Visits</h2>`;
   h += vs.length ? `<div class="list">${vs.map(v=>{
@@ -624,8 +628,8 @@ function renderProjectEdit(p){
       <p class="muted small" style="margin:4px 0 0">You can change the letter codes. The number ${esc(p.id)} can't change; to file a visit under a different number, move the visit instead.</p><p class="warn" id="pe_err"></p></div>
     <div class="field wide"><label for="f_site">Site name</label><input type="text" id="f_site" data-k="site" value="${esc(p.site)}" autocomplete="off"></div>
   </div></div>
-  <h2>Status</h2><div class="panel"><p class="small">${p.completed?"This project is marked completed and hidden from the ongoing list. Nothing has been deleted.":"Mark the project completed to hide it from the ongoing list. Nothing is deleted and it can be reopened."}</p>
-    <button class="btn ${p.completed?"":"primary"} block" data-act="toggle-project-done">${p.completed?"Reopen project":"Mark project completed"}</button></div>`;
+  <h2>Status</h2><div class="panel"><p class="small">${gasDone(p)?"Gas monitoring on this project is marked completed and hidden from the ongoing list. Nothing has been deleted.":"Mark gas monitoring completed to hide the project from the ongoing list. Nothing is deleted and it can be reopened. Other tools are not affected."}</p>
+    <button class="btn ${gasDone(p)?"":"primary"} block" data-act="toggle-project-done">${gasDone(p)?"Reopen gas monitoring":"Mark gas monitoring completed"}</button></div>`;
   $("#pe_no").addEventListener("change", e=>{
     const full=normProject(e.target.value), m=full.match(PROJECT_RE), err=$("#pe_err");
     if(!m){ err.textContent="Doesn't match the format, e.g. 10171,GI"; return; }
@@ -706,7 +710,7 @@ function moveVisit(v){
   const to=m[1]; if(to===v.projectNum){ err.textContent="It's already in that project."; return; }
   const from=projects.get(v.projectNum);
   let target=projects.get(to);
-  if(!target) target=createDoc("projects", to, {fullNo:full, site:from?from.site:"", locations:{}, completed:false});
+  if(!target) target=createDoc("projects", to, {fullNo:full, site:from?from.site:"", locations:{}, gasCompleted:false});
   // Match locations by name, adding any the target project doesn't have.
   const byName = {}; projLocs(target).forEach(l=>byName[l.name.toUpperCase()]=l.id);
   const readings = {};
@@ -816,7 +820,7 @@ function importLegacy(id){
   const old = legacyVisits().find(v=>v.id===id); if(!old) return;
   const full=normProject($("#imp_"+id).value), m=full.match(PROJECT_RE);
   if(!m){ $("#imperr_"+id).textContent="Doesn't match the format, e.g. 10171,GI"; return; }
-  let p = projects.get(m[1]) || createDoc("projects", m[1], {fullNo:full, site:old.site||"", locations:{}, completed:false});
+  let p = projects.get(m[1]) || createDoc("projects", m[1], {fullNo:full, site:old.site||"", locations:{}, gasCompleted:false});
   const names = (old.locations||[]).map(l=>String(l.name).trim().toUpperCase()).filter(Boolean);
   addLocationsTo(p, names);
   const byName={}; projLocs(p).forEach(l=>byName[l.name.toUpperCase()]=l.id);
@@ -1045,7 +1049,7 @@ document.addEventListener("click", e=>{
   else if(act==="sign-out"){ flush(); FB.signOut(auth); location.hash="#/"; }
   else if(act==="toggle-completed"){ showCompleted=!showCompleted; $("#plist").innerHTML=projectListHTML(); }
   else if(act==="create-project") createProject();
-  else if(act==="toggle-project-done"){ applyEdit("completed", !p.completed); flush(); toast(p.completed?"Project marked completed":"Project reopened"); route(); }
+  else if(act==="toggle-project-done"){ applyEdit("gasCompleted", !gasDone(p)); flush(); toast(gasDone(p)?"Gas monitoring marked completed":"Gas monitoring reopened"); route(); }
   else if(act==="new-visit") newVisit(p);
   else if(act==="add-loc") bindAddLoc.go();
   else if(act==="show-move"){ const b=$("#moveBox"); b.hidden=!b.hidden; }

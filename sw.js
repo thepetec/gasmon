@@ -2,7 +2,9 @@
 // The page itself: fetched fresh when there's signal (3 s limit), otherwise served from the phone.
 // Other files: served from the phone, refreshed in the background.
 // To release an update: change CACHE here AND APP_VERSION in index.html.
-const CACHE = "gasfield-2.7";
+// Other Geosphere tools are on the same web address, so they share this phone storage area.
+// Only this tool's own old caches (names starting "gasfield-") are ever removed.
+const CACHE = "gasfield-2.8";
 const ASSETS = ["./", "./index.html", "./xlsx.full.min.js", "./firebase.js", "./jszip.min.js", "./ggt012.js", "./weather.js", "./GGT012.xltx", "./manifest.webmanifest",
                 "./icon-192.png", "./icon-512.png", "./apple-touch-icon.png"];
 
@@ -18,7 +20,7 @@ self.addEventListener("install", e => {
 
 self.addEventListener("activate", e => {
   e.waitUntil(caches.keys()
-    .then(keys => Promise.all(keys.filter(k => k !== CACHE).map(k => caches.delete(k))))
+    .then(keys => Promise.all(keys.filter(k => k.startsWith("gasfield-") && k !== CACHE).map(k => caches.delete(k))))
     .then(() => self.clients.claim()));
 });
 
