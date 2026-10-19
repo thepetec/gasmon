@@ -124,6 +124,7 @@ button:focus-visible,a:focus-visible{outline:3px solid var(--hv);outline-offset:
 .suffix{font-weight:600;color:var(--muted);font-size:15px;overflow-wrap:anywhere}
 .suffix[hidden]{display:none}
 .panel.quiet{background:transparent}
+.wxcard{margin-top:10px;border:2px solid var(--hv);border-radius:10px;padding:12px;background:var(--field)}
 .btn.small-btn{min-height:44px;font-size:15px;padding:8px 14px;border-width:1px;border-color:var(--line);font-weight:600}
 .emailstep{margin-top:12px;padding:12px;border:2px dashed var(--hv);border-radius:10px}
 .emailstep[hidden]{display:none}
@@ -160,9 +161,10 @@ button:focus-visible,a:focus-visible{outline:3px solid var(--hv);outline-offset:
 <script src="firebase.js"></script>
 <script src="jszip.min.js"></script>
 <script src="ggt012.js"></script>
+<script src="weather.js"></script>
 <script>
 "use strict";
-const APP_VERSION = "2.6"; // keep in step with CACHE in sw.js
+const APP_VERSION = "2.7"; // keep in step with CACHE in sw.js
 
 /* ---------- Settings ---------- */
 const FIREBASE_CONFIG = {
@@ -689,6 +691,8 @@ function renderDetails(v){
     <div class="field wide" id="instOther" ${v.instrument==="Other"?"":"hidden"}><label for="f_instrumentOther">Other instrument</label><input id="f_instrumentOther" data-k="instrumentOther" type="text" value="${esc(v.instrumentOther)}"></div>
   </div></div>
   <h2>Weather</h2><div class="panel"><div class="grid">
+    <div class="field wide"><button class="btn hv block" data-act="get-weather">Get weather from the Met Office</button>
+      <p class="muted small" style="margin:6px 0 0">Use on site. Uses your location and needs signal. You'll be asked to confirm before anything changes.</p><div id="wxBox"></div></div>
     ${WEATHER.map(w=>`<div class="field wide">${segHTML(w.k,w.opts,v[w.k])}</div>`).join("")}
     <div class="field wide"><label for="f_recentWeather">Recent weather <span class="unit">precipitation, wind speed etc.</span></label><textarea id="f_recentWeather" data-k="recentWeather" rows="3">${esc(v.recentWeather)}</textarea></div>
     <div class="field"><label for="f_airTemp">Air temp <span class="unit">°C</span></label><input id="f_airTemp" data-k="airTemp" type="text" inputmode="decimal" value="${esc(v.airTemp)}"></div>
@@ -744,6 +748,31 @@ function renderLoc(v, locId){
     <button class="btn" data-act="go" data-href="${prev?`#/v/${v.id}/l/${prev.id}`:""}" ${prev?"":"disabled"}>‹ ${prev?esc(prev.name):"Previous"}</button>
     <button class="btn primary" data-act="go" data-href="${next?`#/v/${v.id}/l/${next.id}`:`#/v/${v.id}`}">${next?esc(next.name)+" ›":"All locations"}</button></nav>`;
   paintWarnings();
+}
+
+/* ---------- Met Office weather ---------- */
+let wxResult = null;
+async function getWeather(v){
+  const box = $("#wxBox"); if(!box) return;
+  if(!window.getWeatherSuggestion){ box.innerHTML = `<p class="warn">The weather code isn't loaded. Open the app once with signal.</p>`; return; }
+  box.innerHTML = `<p class="small" style="margin:10px 0 0">Finding your location and asking the Met Office…</p>`;
+  try{
+    const r = await getWeatherSuggestion(); wxResult = {visitId:v.id, ...r};
+    const gap = Math.abs(new Date(v.datetime) - new Date()) / 3600000;
+    const names = {pressureTrend:"Pressure during monitoring", temp:"Temperature", sky:"Sky", wet:"Ground", wind:"Wind", airTemp:"Air temp (°C)", recentWeather:"Recent weather"};
+    box.innerHTML = `<div class="wxcard"><p style="margin:0 0 6px"><strong>Met Office suggests</strong>${r.source.place?` <span class="muted small">near ${esc(r.source.place)}</span>`:""}</p>
+      <ul class="small" style="margin:0 0 8px;padding-left:18px">${r.lines.map(l=>`<li>${esc(l)}</li>`).join("")}</ul>
+      ${r.fields.recentWeather?`<p class="small" style="margin:0 0 8px"><b>Recent weather:</b> ${esc(r.fields.recentWeather)}</p>`:""}
+      ${gap>3?`<p class="warn">This visit is dated ${esc(fmtDate(v.datetime))}, but this is the weather now. Only use it if that's right.</p>`:""}
+      <p class="muted small" style="margin:0 0 8px">Will fill: ${Object.keys(r.fields).map(k=>names[k]||k).join(", ")}. You can still change anything afterwards.</p>
+      <div class="row"><button class="btn primary" data-act="use-weather">Use these</button><button class="btn" data-act="dismiss-weather">Dismiss</button></div></div>`;
+  }catch(e){ box.innerHTML = `<p class="warn" style="margin-top:10px">${esc(e.message||e)}</p>`; }
+}
+function useWeather(v){
+  if(!wxResult || wxResult.visitId!==v.id) return;
+  for(const [k,val] of Object.entries(wxResult.fields)) applyEdit(k, val);
+  applyEdit("weatherSource", wxResult.source); flush();
+  wxResult = null; route(true); toast("Weather filled in. Check it looks right.");
 }
 
 /* ---------- Visits from the previous version ---------- */
@@ -1025,6 +1054,9 @@ document.addEventListener("click", e=>{
   else if(act==="export-project") exportProject(p, btn.dataset.mode);
   else if(act==="export-ggt") exportGGT012(p, btn.dataset.mode);
   else if(act==="do-import") importLegacy(btn.dataset.id);
+  else if(act==="get-weather") getWeather(v);
+  else if(act==="use-weather") useWeather(v);
+  else if(act==="dismiss-weather"){ wxResult=null; const b=$("#wxBox"); if(b) b.innerHTML=""; }
   else if(act==="do-restore") restoreLost();
   else if(act==="forget-lost") forgetLost();
   else if(act==="reset-imported"){ try{ localStorage.removeItem(IMPORTED_KEY); }catch(e){} location.hash="#/import"; }
