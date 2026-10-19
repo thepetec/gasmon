@@ -162,7 +162,7 @@ button:focus-visible,a:focus-visible{outline:3px solid var(--hv);outline-offset:
 <script src="ggt012.js"></script>
 <script>
 "use strict";
-const APP_VERSION = "2.4"; // keep in step with CACHE in sw.js
+const APP_VERSION = "2.6"; // keep in step with CACHE in sw.js
 
 /* ---------- Settings ---------- */
 const FIREBASE_CONFIG = {
@@ -760,7 +760,8 @@ function renderImport(){
   if(!list.length){ $("#app").innerHTML=`<div class="panel empty"><p>All visits have been filed.</p></div>`; return; }
   $("#app").innerHTML = `<p class="small">These were entered before projects existed and are only on this phone. Enter the full project number for each to file it and sync it. The original stays on this phone as a backup.</p>
     <div class="list">${list.map(v=>`<div class="panel"><p><strong>${esc([v.project,v.site].filter(filled).join(" ")||"Untitled visit")}</strong>${v.visitNo?` · ${esc(v.visitNo)} visit`:""}<br><span class="muted small">${esc(fmtDate(v.datetime))} · ${(v.locations||[]).length} locations</span></p>
-      <div class="addrow"><input type="text" id="imp_${v.id}" value="${esc(normProject(v.project))}" placeholder="e.g. 10171,GI" autocapitalize="characters" autocomplete="off" autocorrect="off" spellcheck="false" aria-label="Full project number"><button class="btn hv" data-act="do-import" data-id="${v.id}">File</button></div><p class="warn" id="imperr_${v.id}"></p></div>`).join("")}</div>`;
+      <div class="addrow"><input type="text" id="imp_${v.id}" value="${esc(normProject(v.project))}" placeholder="e.g. 10171,GI" autocapitalize="characters" autocomplete="off" autocorrect="off" spellcheck="false" aria-label="Full project number"><button class="btn hv" data-act="do-import" data-id="${v.id}">File</button></div><p class="warn" id="imperr_${v.id}"></p></div>`).join("")}</div>
+    <h2>Not needed?</h2><p class="small">Remove all visits from the previous version from this phone. Anything already filed into projects stays in the database.</p>${sliderHTML("Slide to remove from this phone","discard-legacy")}`;
 }
 function renderRestore(){
   cur={kind:"import"};
@@ -862,13 +863,27 @@ function sentenceCase(t){ t=String(t||"").toLowerCase(); return t.charAt(0).toUp
 function bglValue(v, r, val){ if(v.relativeTo!=="Top of pipe") return cellVal(val); const d=num(val), ph=num(r.pipeHeight); return (d===null||ph===null) ? cellVal(val) : Math.round((d-ph)*100)/100; }
 function excelDate(s){ const d=new Date(s); if(isNaN(d)) return ""; return Math.round((Date.UTC(d.getFullYear(),d.getMonth(),d.getDate()) - Date.UTC(1899,11,30))/86400000); }
 let templateBuf = null;
+// Each visit goes in the row for its visit number (1st = row 9 ... 6th = row 14).
+// Visits with no number, or a number already taken, go in the first free row.
+function placeVisits(p){
+  const slots = Array(6).fill(null), moved = [], dropped = [];
+  const vs = projVisits(p.id);
+  for(const v of vs){ const i = VISIT_NOS.indexOf(v.visitNo); if(i>=0 && !slots[i]) slots[i] = v; else moved.push(v); }
+  const placed = [];
+  for(const v of moved){ const j = slots.findIndex(x=>!x); if(j>=0){ slots[j] = v; placed.push(v); } else dropped.push(v); }
+  return {slots, placed, dropped};
+}
 async function buildGGT012Files(p){
   if(!templateBuf){ const res = await fetch("GGT012.xltx"); if(!res.ok) throw new Error("template missing"); templateBuf = await res.arrayBuffer(); }
-  const vs = projVisits(p.id).slice(0,6), locs = projLocs(p);
+  const {slots} = placeVisits(p), locs = projLocs(p);
+  const lastUsed = slots.reduce((m,v,i)=>v?i:m, -1);
   const locData = locs.map(l=>{
     let waterMax = 0; const remarks = [], insts = new Set();
-    const rows = vs.map(v=>{
-      const r = reading(v,l.id), skipped = r.status && r.status!=="Monitored", label = (v.visitNo||"?")+" visit";
+    const rows = slots.map((v,i)=>{
+      const label = VISIT_NOS[i]+" visit";
+      // Gaps (e.g. a visit done on paper) keep their row, labelled, ready to fill in by hand.
+      if(!v) return i<lastUsed ? {C:label} : {};
+      const r = reading(v,l.id), skipped = r.status && r.status!=="Monitored";
       insts.add(INSTRUMENT_TEMPLATE[v.instrument] || instText(v));
       if(filled(r.notes)) remarks.push(`${label}: ${r.notes.trim()}`);
       if(skipped) return {C:label, D:excelDate(v.datetime), Q:r.status};
@@ -898,7 +913,9 @@ async function buildGGT012Files(p){
 async function exportGGT012(p, mode){
   if(!window.fillGGT012 || !window.JSZip){ toast("The template code isn't loaded. Open the app once with signal."); return; }
   flush();
-  if(projVisits(p.id).length>6) toast("The template has room for 6 visits. Only the first 6 are included.", 5000);
+  const pl = placeVisits(p);
+  if(pl.dropped.length) toast(`The template has room for 6 visits. Left out: ${pl.dropped.map(v=>fmtDate(v.datetime,false)).join(", ")}.`, 6000);
+  else if(pl.placed.length) toast(`${pl.placed.length} visit${pl.placed.length===1?" has no visit number or shares one":"s have no visit number or share one"}, so went in the first free row.`, 6000);
   if(!projLocs(p).length){ toast("Add monitoring locations first."); return; }
   let files; try{ files = await buildGGT012Files(p); }catch(e){ toast("Couldn't build the spreadsheet: "+(e.message||e), 6000); return; }
   const vs = projVisits(p.id);
@@ -1015,6 +1032,10 @@ document.addEventListener("click", e=>{
 
 /* ---------- Slide to confirm ---------- */
 function slideDone(act){
+  if(act==="discard-legacy"){
+    try{ localStorage.removeItem(LEGACY_KEY); localStorage.removeItem(IMPORTED_KEY); }catch(e){}
+    location.hash = "#/"; toast("Removed visits from the previous version"); return true;
+  }
   const v = curVisit(); if(!v) return false;
   if(act==="del-loc"){
     const p = projects.get(v.projectNum), name = p.locations[cur.locId].name;
