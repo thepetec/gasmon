@@ -66,7 +66,7 @@ p{margin:0 0 8px}
 .field.wide{grid-column:1/-1}
 .field label{display:block;font-size:14px;font-weight:650;margin:0 0 4px}
 .unit{font-weight:500;color:var(--muted)}
-input[type=text],input[type=datetime-local],textarea{width:100%;background:var(--field);border:2px solid var(--line);border-radius:10px;padding:11px 12px;font-size:20px;min-height:52px;font-variant-numeric:tabular-nums;-webkit-appearance:none;appearance:none}
+input[type=text],input[type=datetime-local],input[type=time],input[type=date],textarea{width:100%;background:var(--field);border:2px solid var(--line);border-radius:10px;padding:11px 12px;font-size:20px;min-height:52px;font-variant-numeric:tabular-nums;-webkit-appearance:none;appearance:none}
 textarea{font-size:17px;min-height:96px;resize:vertical}
 input:focus,textarea:focus{outline:none;border-color:var(--hv);box-shadow:0 0 0 3px color-mix(in srgb,var(--hv) 30%,transparent)}
 .field.has-warn input{border-color:var(--warn)}
@@ -151,6 +151,22 @@ button:focus-visible,a:focus-visible{outline:3px solid var(--hv);outline-offset:
 .linkbtn{border:0;background:none;padding:0;color:var(--hv-text);font-weight:700;text-decoration:underline;cursor:pointer;font-size:inherit}
 .err-notice{border-left-color:var(--warn);color:var(--warn);font-weight:600}
 .item .tag{flex:0 0 auto}
+/* Infiltration tests */
+.ctrl{border:2px solid var(--hv);border-radius:12px;background:var(--surface);padding:14px}
+.ctrl .lbl{font-size:14px;font-weight:700;color:var(--muted);margin:0}
+.timer{font-size:44px;font-weight:800;line-height:1.1;font-variant-numeric:tabular-nums;margin:2px 0 6px}
+.ctrl .btn{min-height:58px;font-size:18px}
+.runs{display:flex;flex-direction:column;gap:10px}
+.runcard{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:12px 14px}
+.runcard.open{border:2px solid var(--hv)}
+.runcard.avg{box-shadow:inset 5px 0 0 var(--hv)}
+.runhead{display:flex;align-items:baseline;gap:10px;margin:0 0 8px}
+.runhead b{font-size:17px}
+.calc{font-size:14px;color:var(--muted);margin:8px 0 0}
+.calc b{color:var(--ink)}
+.strip{display:flex;gap:8px;overflow-x:auto;margin:0 0 12px;padding-bottom:2px}
+.strip a{flex:0 0 auto;display:flex;align-items:center;gap:8px;border:1px solid var(--line);background:var(--surface);border-radius:10px;padding:6px 10px;text-decoration:none;font-size:14px;font-weight:600;font-variant-numeric:tabular-nums}
+.strip .tag{font-size:14px;min-width:0;padding:3px 8px}
 </style>
 </head>
 <body>
@@ -161,10 +177,11 @@ button:focus-visible,a:focus-visible{outline:3px solid var(--hv);outline-offset:
 <script src="firebase.js"></script>
 <script src="jszip.min.js"></script>
 <script src="ggt012.js"></script>
+<script src="drit.js"></script>
 <script src="weather.js"></script>
 <script>
 "use strict";
-const APP_VERSION = "2.8"; // keep in step with CACHE in sw.js
+const APP_VERSION = "2.9"; // keep in step with CACHE in sw.js
 
 /* ---------- Settings ---------- */
 const FIREBASE_CONFIG = {
@@ -178,6 +195,9 @@ const FIREBASE_CONFIG = {
 const EMAIL_DOMAIN = "@geosphere-environmental.co.uk";
 const EXTRA_ALLOWED_EMAILS = ["petercoynework@gmail.com"]; // testing only; must match the Firestore rules
 const PROJECT_RE = /^(\d{4,5})((?:,[A-Z]{2,})+)$/;
+// Infiltration tests (DRIT) are only shown to these accounts while they're being tested.
+// Add more addresses here to open it up; everyone else sees the gas tool exactly as before.
+const DRIT_USERS = ["petercoynework@gmail.com"];
 
 /* ---------- Field definitions ---------- */
 const VISIT_NOS = ["1st","2nd","3rd","4th","5th","6th"];
@@ -239,14 +259,19 @@ function msOf(v){ const t = v && (v.toMillis ? v.toMillis() : (v.seconds ? v.sec
 // so finishing gas monitoring doesn't hide the project from the other tools.
 // Older projects only have the original shared "completed" field, which is read as the gas flag.
 function gasDone(p){ return !!(p && (p.gasCompleted ?? p.completed)); }
+function dritOn(){ return !!(user && DRIT_USERS.includes(String(user.email||"").toLowerCase())); }
+function getPath(o, path){ return path.split(".").reduce((x,k)=>x==null?undefined:x[k], o); }
 function emailAllowed(e){ e=String(e||"").toLowerCase(); return e.endsWith(EMAIL_DOMAIN) || EXTRA_ALLOWED_EMAILS.includes(e); }
 
 /* ---------- Firebase ---------- */
 let app, auth, fdb, user = null;
 const projects = new Map(); // num -> project
 const visits = new Map();   // id -> visit
-let loaded = {projects:false, visits:false};
-let pendingRemote = {projects:false, visits:false};
+const drits = new Map();    // id -> infiltration test
+let loaded = {projects:false, visits:false, drits:false};
+let pendingRemote = {projects:false, visits:false, drits:false};
+let dritError = "";
+function colMap(col){ return col==="projects" ? projects : col==="drits" ? drits : visits; }
 let syncError = "";
 let unsubs = [];
 let tokenRetried = false;
@@ -265,7 +290,7 @@ function startFirebase(){
     route();
   });
 }
-function stopListeners(){ unsubs.forEach(f=>f()); unsubs=[]; projects.clear(); visits.clear(); loaded={projects:false,visits:false}; }
+function stopListeners(){ unsubs.forEach(f=>f()); unsubs=[]; projects.clear(); visits.clear(); drits.clear(); loaded={projects:false,visits:false,drits:false}; }
 function startListeners(){
   const onErr = async e => {
     if(e && e.code==="permission-denied" && !tokenRetried && user){ tokenRetried = true; try{ await user.getIdToken(true); }catch(_){} stopListeners(); startListeners(); return; }
@@ -284,6 +309,17 @@ function startListeners(){
     reapplyPending("visits", visits);
     loaded.visits = true; pendingRemote.visits = snap.metadata.hasPendingWrites; syncError=""; onData();
   }, onErr));
+  // Infiltration tests have their own error so a missing database rule can't upset the gas tool.
+  if(dritOn()) unsubs.push(FB.onSnapshot(FB.query(FB.collection(fdb,"drits"), FB.where("deleted","==",false)), {includeMetadataChanges:true}, snap => {
+    drits.clear(); snap.forEach(d => drits.set(d.id, {...d.data(), id:d.id}));
+    reapplyPending("drits", drits);
+    loaded.drits = true; pendingRemote.drits = snap.metadata.hasPendingWrites; dritError=""; onData();
+  }, e => {
+    dritError = e && e.code==="permission-denied"
+      ? "The database refused access to infiltration tests. Add a rule for the drits collection (the same as the one for visits) and publish it. Don't record real tests until this clears."
+      : "Infiltration test sync problem: " + (e && (e.code||e.message));
+    loaded.drits = true; paintStatus(); route(true);
+  }));
 }
 
 /* Edits are applied to memory straight away and written to Firestore after a short pause.
@@ -292,17 +328,20 @@ function startListeners(){
    If the database ever rejects or loses a change, it can be restored from here. */
 const BACKUP_KEY = "gasfield.backup";
 let backup = (()=>{ try{ const b=JSON.parse(localStorage.getItem(BACKUP_KEY)||"null"); if(b&&b.projects&&b.visits) return b; }catch(e){} return {projects:{},visits:{}}; })();
+if(!backup.drits) backup.drits = {};
 let backupTimer = null;
 function markBackup(col, id){
-  const o = (col==="projects"?projects:visits).get(id); if(!o) return;
+  const o = colMap(col).get(id); if(!o) return;
   const c = JSON.parse(JSON.stringify(o)); delete c.createdAt; delete c.updatedAt; c.id = id;
   backup[col][id] = c; clearTimeout(backupTimer); backupTimer = setTimeout(saveBackup, 300);
 }
 function saveBackup(){ clearTimeout(backupTimer); backupTimer=null; try{ localStorage.setItem(BACKUP_KEY, JSON.stringify(backup)); }catch(e){} }
 function lostRecords(){
-  if(!loaded.projects || !loaded.visits || syncError || pend.size || pendingRemote.projects || pendingRemote.visits) return {projects:[], visits:[]};
+  if(!loaded.projects || !loaded.visits || syncError || pend.size || pendingRemote.projects || pendingRemote.visits) return {projects:[], visits:[], drits:[]};
+  const dritsOK = dritOn() && loaded.drits && !dritError && !pendingRemote.drits;
   return { projects: Object.values(backup.projects).filter(b=>!projects.has(b.id)),
-           visits: Object.values(backup.visits).filter(b=>!b.deleted && !visits.has(b.id)) };
+           visits: Object.values(backup.visits).filter(b=>!b.deleted && !visits.has(b.id)),
+           drits: dritsOK ? Object.values(backup.drits).filter(b=>!b.deleted && !drits.has(b.id)) : [] };
 }
 const pend = new Map(); // "col/id" -> {col,id,fields}
 let flushTimer = null;
@@ -330,7 +369,7 @@ window.addEventListener("online", paintStatus); window.addEventListener("offline
 function createDoc(col, id, data){
   const full = {...data, createdAt:FB.serverTimestamp(), createdBy:user.email, updatedAt:FB.serverTimestamp(), updatedBy:user.email};
   const local = {...data, id, createdBy:user.email, updatedBy:user.email};
-  (col==="projects"?projects:visits).set(id, local);
+  colMap(col).set(id, local);
   markBackup(col, id);
   FB.setDoc(FB.doc(fdb, col, id), full, {merge:true}).catch(e => { syncError = "Couldn't save: " + (e.code||e.message); paintStatus(); });
   return local;
@@ -387,6 +426,7 @@ function curObj(){
   if(cur.kind==="fresh") return v && (v.freshAir||{});
   if(cur.kind==="loc") return v && reading(v, cur.locId);
   if(cur.kind==="projedit") return curProject();
+  if(cur.kind==="drit") return drits.get(cur.dritId);
   return null;
 }
 // Where an edit to field k on the current screen is stored.
@@ -398,11 +438,12 @@ function editTarget(k){
     return {col:"visits", id:cur.visitId, path:`readings.${cur.locId}.${k}`};
   }
   if(cur.kind==="projedit") return {col:"projects", id:cur.projNum, path:k};
+  if(cur.kind==="drit") return {col:"drits", id:cur.dritId, path:k};
   return null;
 }
 function applyEdit(k, value){
   const t = editTarget(k); if(!t) return;
-  const map = t.col==="projects" ? projects : visits; const o = map.get(t.id); if(!o) return;
+  const o = colMap(t.col).get(t.id); if(!o) return;
   setPath(o, t.path, value);
   queueUpdate(t.col, t.id, t.path, value);
 }
@@ -416,8 +457,8 @@ function bar(title, backHref){
 function paintStatus(){
   const s=$("#status"); if(!s) return;
   if(!user || !user.emailVerified){ s.className="status"; s.textContent=""; return; }
-  if(syncError){ s.className="status err"; s.textContent="Sync problem"; s.title=syncError; return; }
-  const waiting = pend.size>0 || pendingRemote.projects || pendingRemote.visits;
+  if(syncError || (dritError && cur.kind==="drit")){ s.className="status err"; s.textContent="Sync problem"; s.title=syncError||dritError; return; }
+  const waiting = pend.size>0 || pendingRemote.projects || pendingRemote.visits || pendingRemote.drits;
   s.className="status";
   if(!waiting) s.textContent = "Synced ✓";
   else s.textContent = navigator.onLine ? "Syncing…" : "On phone · will sync";
@@ -453,16 +494,18 @@ function refreshForm(){
   const o = curObj(); if(!o) return route();
   document.querySelectorAll("main [data-k]").forEach(el=>{
     if(el===document.activeElement) return;
-    const v = el.dataset.k==="name" && cur.kind==="loc" ? ((curProject()||projects.get(curVisit().projectNum)).locations[cur.locId]||{}).name : o[el.dataset.k];
+    const v = el.dataset.k==="name" && cur.kind==="loc" ? ((curProject()||projects.get(curVisit().projectNum)).locations[cur.locId]||{}).name : getPath(o, el.dataset.k);
     if((el.value||"") !== String(v??"")) el.value = v ?? "";
   });
   document.querySelectorAll("main .seg").forEach(seg=>{ const val=o[seg.dataset.set] || SEG_DEFAULTS[seg.dataset.set] || ""; seg.querySelectorAll("button").forEach(b=>b.setAttribute("aria-pressed", String(b.dataset.val===val))); });
   paintWarnings();
+  if(cur.kind==="drit") paintDrit();
 }
 function onData(){
   paintStatus();
   if(!loaded.projects || !loaded.visits) return;
-  if(["details","fresh","loc","projedit"].includes(cur.kind) && document.querySelector("main [data-k]")) return refreshForm();
+  if(cur.kind==="drit" && !drits.has(cur.dritId)) return route();
+  if(["details","fresh","loc","projedit","drit"].includes(cur.kind) && document.querySelector("main [data-k]")) return refreshForm();
   if(cur.kind==="home" && $("#plist")) { $("#plist").innerHTML = projectListHTML(); return; }
   const a = document.activeElement; if(a && a.matches && a.matches("main input, main textarea")) return; // don't interrupt typing
   if(cur.kind!=="newproj" && cur.kind!=="import" && cur.kind!=="auth") route(true);
@@ -551,11 +594,12 @@ function projectListHTML(){
   const all = [...projects.values()].filter(p => !q || String(p.fullNo).toLowerCase().includes(q) || String(p.site||"").toLowerCase().includes(q));
   const live = all.filter(p=>!gasDone(p)), done = all.filter(p=>gasDone(p));
   const sortFn = (a,b) => String(lastActivity(b)||"").localeCompare(String(lastActivity(a)||"")) || String(b.id).localeCompare(String(a.id));
-  const item = p => { const vs=projVisits(p.id), last=vs[vs.length-1];
+  const item = p => { const vs=projVisits(p.id), last=vs[vs.length-1], nd=dritOn()?projDrits(p.id).length:0;
     return `<a class="item" href="#/p/${p.id}"><span class="tag">${esc(p.fullNo)}</span><div class="main"><div class="title">${esc(p.site||"No site name")}</div>
-      <div class="sub">${vs.length} visit${vs.length===1?"":"s"}${last?` · last ${esc(fmtDate(last.datetime,false))}`:""}</div></div><span class="chev">›</span></a>`; };
+      <div class="sub">${vs.length} visit${vs.length===1?"":"s"}${last?` · last ${esc(fmtDate(last.datetime,false))}`:""}${nd?` · ${nd} DRIT${nd===1?"":"s"}`:""}</div></div><span class="chev">›</span></a>`; };
   let h = "";
-  const lost = lostRecords(), nLost = lost.projects.length + lost.visits.length;
+  if(dritOn() && !q) h += runningListHTML();
+  const lost = lostRecords(), nLost = lost.projects.length + lost.visits.length + lost.drits.length;
   if(nLost) h += `<a class="item" href="#/restore" style="border-color:var(--warn);margin-top:8px"><div class="main"><div class="title">${nLost} record${nLost===1?"":"s"} saved on this phone ${nLost===1?"isn't":"aren't"} in the database</div><div class="sub">Tap to restore them.</div></div><span class="chev">›</span></a>`;
   h += `<h2>${q?"Matching projects":"Ongoing projects"}</h2>`;
   h += live.length ? `<div class="list">${live.sort(sortFn).map(item).join("")}</div>` : `<div class="panel empty"><p class="muted">${q?"No ongoing projects match.":"No ongoing projects."}</p></div>`;
@@ -611,6 +655,7 @@ function renderProject(p){
         <div class="sub">${esc(v.by||"–")} · ${done} of ${locs.length} locations complete</div></div><span class="chev">›</span></a>`; }).join("")}</div>`
     : `<div class="panel empty"><p class="muted">No visits yet.</p></div>`;
   h += `<div style="margin-top:12px"><button class="btn primary block" data-act="new-visit">Start ${esc(suggestVisitNo(p.id)||"a new")} visit</button></div>`;
+  if(dritOn()) h += projectDritsHTML(p);
   h += `<h2>Monitoring locations</h2><div class="panel"><p class="small">${locs.length ? locs.map(l=>`<span class="tag" style="margin:0 6px 6px 0">${esc(l.name)}</span>`).join("") : `<span class="muted">None yet.</span>`}</p>
     <div class="addrow"><input type="text" id="addLoc" placeholder="e.g. WS01, WS04, BH2" autocapitalize="characters" autocomplete="off" aria-label="Location names" enterkeyhint="done"><button class="btn hv" data-act="add-loc">Add</button></div>
     <p class="muted small" style="margin:6px 0 0">Locations are shared by every visit to this project. Rename or remove one from its reading page.</p></div>`;
@@ -800,21 +845,22 @@ function renderRestore(){
   cur={kind:"import"};
   bar("Restore from phone", "#/");
   const lost = lostRecords();
-  if(!lost.projects.length && !lost.visits.length){ $("#app").innerHTML=`<div class="panel empty"><p>Everything saved on this phone is in the database.</p></div>`; return; }
+  if(!lost.projects.length && !lost.visits.length && !lost.drits.length){ $("#app").innerHTML=`<div class="panel empty"><p>Everything saved on this phone is in the database.</p></div>`; return; }
   const pName = n => (projects.get(n)||backup.projects[n]||{}).fullNo || n;
   $("#app").innerHTML = `<p class="small">These were saved on this phone but aren't in the database. That usually means the database refused them, for example while access wasn't set up. If someone deleted a visit on another phone, it can also show here.</p>
-    <div class="panel"><ul style="margin:0;padding-left:20px">${lost.projects.map(b=>`<li>Project ${esc(b.fullNo)} ${esc(b.site||"")}</li>`).join("")}${lost.visits.map(b=>`<li>${esc(pName(b.projectNum))} · ${esc(b.visitNo||"?")} visit · ${esc(fmtDate(b.datetime))}</li>`).join("")}</ul></div>
+    <div class="panel"><ul style="margin:0;padding-left:20px">${lost.projects.map(b=>`<li>Project ${esc(b.fullNo)} ${esc(b.site||"")}</li>`).join("")}${lost.visits.map(b=>`<li>${esc(pName(b.projectNum))} · ${esc(b.visitNo||"?")} visit · ${esc(fmtDate(b.datetime))}</li>`).join("")}${lost.drits.map(b=>`<li>${esc(pName(b.projectNum))} · infiltration test ${esc(b.location||"")} · ${esc(fmtDate(b.date,false))}</li>`).join("")}</ul></div>
     <div class="row" style="margin-top:14px"><button class="btn primary" data-act="do-restore">Restore to database</button><button class="btn" data-act="forget-lost">Clear this list</button></div>`;
 }
 function restoreLost(){
   const lost = lostRecords(); const strip = b => { const c={...b}; delete c.id; return c; };
   for(const b of lost.projects){ projects.set(b.id, b); FB.setDoc(FB.doc(fdb,"projects",b.id), {...strip(b), updatedAt:FB.serverTimestamp(), updatedBy:user.email}, {merge:true}).catch(e=>{ syncError="Couldn't restore: "+(e.code||e.message); paintStatus(); }); }
   for(const b of lost.visits){ visits.set(b.id, b); FB.setDoc(FB.doc(fdb,"visits",b.id), {...strip(b), deleted:false, updatedAt:FB.serverTimestamp(), updatedBy:user.email}, {merge:true}).catch(e=>{ syncError="Couldn't restore: "+(e.code||e.message); paintStatus(); }); }
-  toast(`Restoring ${lost.projects.length+lost.visits.length} records`); location.hash="#/";
+  for(const b of lost.drits){ drits.set(b.id, b); FB.setDoc(FB.doc(fdb,"drits",b.id), {...strip(b), deleted:false, updatedAt:FB.serverTimestamp(), updatedBy:user.email}, {merge:true}).catch(e=>{ dritError="Couldn't restore: "+(e.code||e.message); paintStatus(); }); }
+  toast(`Restoring ${lost.projects.length+lost.visits.length+lost.drits.length} records`); location.hash="#/";
 }
 function forgetLost(){
   if(!confirm("Remove these from the list? They won't be restored.")) return;
-  const lost = lostRecords(); lost.projects.forEach(b=>delete backup.projects[b.id]); lost.visits.forEach(b=>delete backup.visits[b.id]); saveBackup(); location.hash="#/";
+  const lost = lostRecords(); lost.projects.forEach(b=>delete backup.projects[b.id]); lost.visits.forEach(b=>delete backup.visits[b.id]); lost.drits.forEach(b=>delete backup.drits[b.id]); saveBackup(); location.hash="#/";
 }
 function importLegacy(id){
   const old = legacyVisits().find(v=>v.id===id); if(!old) return;
@@ -1000,6 +1046,246 @@ function exportProject(p, mode){
     [`Compiled gas monitoring results attached: ${name}`, "", `Project: ${p.fullNo}`, `Site: ${p.site||"–"}`, `Visits: ${vs.map(v=>`${v.visitNo||"?"} (${fmtDate(v.datetime,false)})`).join(", ")||"–"}`, `Locations: ${projLocs(p).map(l=>l.name).join(", ")||"–"}`]);
 }
 
+/* ---------- Infiltration tests (DRIT) ---------- */
+// One test per page. Each run: filled (start time, level after filling), then read before refilling
+// (end time, level before refill). Levels in cm to 1 decimal place, measured down from the reference.
+let dritFocus = "", dritSigShown = "", dritTemplateBuf = null;
+const pad2 = n => String(n).padStart(2,"0");
+const hhmm = d => pad2(d.getHours())+":"+pad2(d.getMinutes());
+function todayStr(){ return nowLocal().slice(0,10); }
+function minsOf(t){ const m=String(t||"").match(/^(\d{1,2}):(\d{2})/); return m ? (+m[1])*60 + (+m[2]) : null; }
+function initials(name){ return String(name||"").split(/\s+/).filter(Boolean).map(w=>w[0].toUpperCase()).join(""); }
+function projDrits(num){ return [...drits.values()].filter(d=>d.projectNum===num).sort((a,b)=>String(a.date).localeCompare(String(b.date)) || (a.created||0)-(b.created||0)); }
+function runList(d){ return Object.entries(d.runs||{}).filter(([,r])=>r && !r.removed).map(([id,r])=>({id,...r})).sort((a,b)=>(a.n||0)-(b.n||0)); }
+function runComplete(r){ return minsOf(r.start)!==null && minsOf(r.end)!==null && isNum(r.after) && isNum(r.before); }
+function runMins(r){ const s=minsOf(r.start), e=minsOf(r.end); if(s===null||e===null) return null; return e>=s ? e-s : e+1440-s; }
+function runRate(r){ const m=runMins(r); if(!runComplete(r) || !m) return null; return (parseFloat(r.before)-parseFloat(r.after))*10/m; } // mm/min
+function dritState(d){ const rs=runList(d), last=rs[rs.length-1]; return {rs, last, open: !!(last && !filled(last.end))}; }
+function isRunning(d){ return !d.finished && d.date===todayStr() && runList(d).length>0; }
+// When a time was captured with the button, use the exact moment; if it has been edited, use the edited time.
+function timeMs(d, r, k){ const ms = r[k+"Ms"]; if(ms && hhmm(new Date(ms))===r[k]) return ms;
+  if(!filled(r[k]) || !d.date) return null; const t = new Date(`${d.date}T${r[k]}:00`).getTime(); return isNaN(t) ? null : t; }
+function fmtElapsed(ms){ const s=Math.max(0,Math.floor(ms/1000)), h=Math.floor(s/3600), m=Math.floor(s%3600/60), x=s%60; return h ? `${h}:${pad2(m)}:${pad2(x)}` : `${m}:${pad2(x)}`; }
+function fmtMins(m){ m=Math.round(m); return m>=60 ? `${Math.floor(m/60)} h ${m%60} min` : `${m} min`; }
+function fmtSci(v){ if(v===null||!isFinite(v)) return "–"; const [a,b]=v.toExponential(2).split("e"); const e=parseInt(b,10); return `${a}E${e<0?"-":"+"}${pad2(Math.abs(e))}`; }
+function dritCompleted(d){ return runList(d).filter(runComplete).map(r=>({start:minsOf(r.start), end:minsOf(r.end), after:parseFloat(r.after), before:parseFloat(r.before), id:r.id, n:r.n})); }
+function dritSig(d){ return JSON.stringify([runList(d).map(r=>r.id+(filled(r.end)?"e":"")), !!d.finished]); }
+function dritTitle(d){ return d.location || "Infiltration test"; }
+
+function runWarn(r){
+  const w = [];
+  for(const [k,lab] of [["after","Level after filling"],["before","Level before refill"]]){
+    const v = r[k]; if(!filled(v)) continue;
+    if(!isNum(v)) w.push(`${lab} isn't a number.`);
+    else if(/\.\d{2,}$/.test(String(v).trim())) w.push(`${lab}: record to 1 decimal place.`);
+  }
+  if(isNum(r.after) && isNum(r.before) && parseFloat(r.before) <= parseFloat(r.after)) w.push("Level before refill should be a bigger number than after filling, as the water has dropped further.");
+  const s=minsOf(r.start), e=minsOf(r.end);
+  if(s!==null && e!==null && e===s) w.push("Start and end times are the same.");
+  else if(s!==null && e!==null && e<s) w.push("Ends before it starts, so it's treated as running past midnight. Check the times.");
+  return w;
+}
+
+/* Lists */
+function runningListHTML(){
+  const list = [...drits.values()].filter(isRunning).sort((a,b)=>(a.created||0)-(b.created||0));
+  if(!list.length) return "";
+  return `<h2>Infiltration tests running</h2><div class="list">${list.map(d=>{
+    const p = projects.get(d.projectNum), {rs,last,open} = dritState(d);
+    const since = last ? timeMs(d, last, open ? "start" : "end") : null;
+    return `<a class="item" href="#/d/${d.id}"><span class="tag">${esc(dritTitle(d))}</span><div class="main"><div class="title">${esc(p?p.fullNo:d.projectNum)}</div>
+      <div class="sub">${open?`Run ${rs.length} running`:`Run ${rs.length} read, refill due`}${since?` · <span data-since="${since}">${fmtElapsed(Date.now()-since)}</span>`:""}</div></div><span class="chev">›</span></a>`;
+  }).join("")}</div>`;
+}
+function projectDritsHTML(p){
+  const ds = projDrits(p.id);
+  let h = `<h2>Infiltration tests (DRIT)</h2>`;
+  if(dritError) h += `<p class="notice err-notice">${esc(dritError)}</p>`;
+  h += ds.length ? `<div class="list">${ds.map(d=>{
+      const done = dritCompleted(d), c = done.length ? dritCalc(done) : null;
+      const status = isRunning(d) ? "Running" : d.finished ? "Finished" : "Not finished";
+      return `<a class="item" href="#/d/${d.id}"><span class="tag">${esc(dritTitle(d))}</span><div class="main"><div class="title">${esc(fmtDate(d.date,false))}</div>
+        <div class="sub">${status} · ${done.length} run${done.length===1?"":"s"}${c&&c.avgRate!==null?` · ${c.avgRate.toFixed(2)} mm/min`:""}</div></div><span class="chev">›</span></a>`; }).join("")}</div>`
+    : `<div class="panel empty"><p class="muted">No infiltration tests yet.</p></div>`;
+  h += `<div style="margin-top:12px"><button class="btn primary block" data-act="new-drit">New infiltration test</button></div>`;
+  return h;
+}
+function newDrit(p){
+  if(!p) return;
+  const id = uid();
+  createDoc("drits", id, {projectNum:p.id, location:"", date:todayStr(), by:initials(user.displayName), w3w:"", gridRef:"", gps:null,
+    runs:{}, finished:false, created:Date.now(), deleted:false});
+  dritFocus = "f_location"; location.hash = `#/d/${id}`;
+}
+
+/* Test page */
+function stripHTML(d){
+  const others = [...drits.values()].filter(x=>x.id!==d.id && isRunning(x));
+  if(!others.length) return "";
+  return `<div class="strip" aria-label="Other tests running">${others.map(x=>{ const {rs,last,open}=dritState(x); const since=last?timeMs(x,last,open?"start":"end"):null;
+    return `<a href="#/d/${x.id}"><span class="tag">${esc(dritTitle(x))}</span><span>${open?`Run ${rs.length}`:"Refill"}${since?` · <span data-since="${since}">${fmtElapsed(Date.now()-since)}</span>`:""}</span></a>`; }).join("")}</div>`;
+}
+function ctrlHTML(d){
+  const {rs, last, open} = dritState(d), first = rs[0], t0 = first ? timeMs(d, first, "start") : null;
+  const today = d.date===todayStr();
+  const total = t0 && today && !d.finished ? `<p class="small" style="margin:0 0 10px">Test time <b data-since="${t0}">${fmtElapsed(Date.now()-t0)}</b> <span class="muted">of about 2 hours</span></p>` : "";
+  if(d.finished) return `<p class="lbl">Test finished</p><p class="small" style="margin:4px 0 10px">${rs.filter(runComplete).length} completed runs. Reopen to add or change runs.</p>
+    <button class="btn block" data-act="drit-reopen">Reopen test</button>`;
+  if(!rs.length) return `<p class="lbl">Ready</p><p style="margin:4px 0 12px">Fill the inner ring, then tap Start. The time is recorded now and you can change it afterwards.</p>
+    <button class="btn hv block" data-act="drit-start">Filled — start run 1</button>`;
+  if(open){
+    const since = timeMs(d, last, "start");
+    // Estimate when this run will have dropped about 10 cm, from the last completed run's rate.
+    const prev = rs.slice(0,-1).reverse().find(runComplete), rate = prev ? runRate(prev) : null;
+    let est = "";
+    if(rate && rate>0 && since){ const at = new Date(since + 100/rate*60000); est = `<p class="small muted" style="margin:0 0 10px">At run ${prev.n}'s rate, about 10 cm will have gone by <b>${hhmm(at)}</b>.</p>`; }
+    return `<p class="lbl">Run ${rs.length} running${filled(last.after)?"":" · enter the level after filling"}</p>
+      <div class="timer">${since && today ? `<span data-since="${since}">${fmtElapsed(Date.now()-since)}</span>` : esc(last.start||"–")}</div>${est}${total}
+      <button class="btn hv block" data-act="drit-end">Read level now — end run ${rs.length}</button>`;
+  }
+  const since = timeMs(d, last, "end");
+  return `<p class="lbl">Run ${rs.length} read${isNum(last.before)?"":" · enter the level before refill"}</p>
+    <div class="timer">${since && today ? `<span data-since="${since}">${fmtElapsed(Date.now()-since)}</span>` : esc(last.end||"–")}</div>${total}
+    <div class="row"><button class="btn hv" data-act="drit-start">Refilled — start run ${rs.length+1}</button><button class="btn" data-act="drit-finish">Finish test</button></div>`;
+}
+function runCalcHTML(d, r, prevDone){
+  if(!runComplete(r)) return filled(r.end) ? "" : `<span class="muted">Running</span>`;
+  const m = runMins(r), inf = (parseFloat(r.before)-parseFloat(r.after))*10, rate = runRate(r), pr = prevDone ? runRate(prevDone) : null;
+  const ch = rate!==null && pr ? Math.round((rate-pr)/pr*100) : null;
+  return `${fmtMins(m)} · ${Math.round(inf*10)/10} mm · <b>${rate!==null?rate.toFixed(2):"–"} mm/min</b>${ch!==null?` · ${ch>0?"+":""}${ch}% on run ${prevDone.n}`:""}`;
+}
+function runCardHTML(d, r, isLast, isOpen){
+  const k = f => `runs.${r.id}.${f}`;
+  const fld = (f, label, unit, type) => `<div class="field"><label for="r_${r.id}_${f}">${label}${unit?` <span class="unit">${unit}</span>`:""}</label>
+    <input id="r_${r.id}_${f}" data-k="${k(f)}" type="${type}" ${type==="text"?'inputmode="decimal" autocomplete="off" autocorrect="off" spellcheck="false" enterkeyhint="next"':""} value="${esc(r[f])}"></div>`;
+  return `<div class="runcard${isOpen?" open":""}" id="run_${r.id}"><div class="runhead"><b>Run ${r.n}</b>${isLast&&!d.finished?`<span style="flex:1"></span><button class="linkbtn small" data-act="drit-remove-run" data-run="${r.id}">Remove run</button>`:""}</div>
+    <div class="grid">${fld("start","Start","filled","time")}${fld("after","Level after filling","cm","text")}${fld("end","End","read","time")}${fld("before","Level before refill","cm","text")}</div>
+    <p class="calc" id="rc_${r.id}"></p><p class="warn" id="rw_${r.id}"></p></div>`;
+}
+function sumHTML(d){
+  const rs = runList(d), done = dritCompleted(d), skipped = rs.filter((r,i)=>!runComplete(r) && (d.finished || i<rs.length-1));
+  let h = "";
+  if(!done.length) h += `<p class="muted small" style="margin:0">Results appear here once a run is complete.</p>`;
+  else {
+    const c = dritCalc(done), a = done[c.from].n, b = done[done.length-1].n;
+    h += `<div class="summary"><dl><dt>Completed runs</dt><dd>${done.length}</dd><dt>Test length</dt><dd>${fmtMins(c.totalMin)}</dd>
+      <dt>Averaged</dt><dd>${c.take>1?`Runs ${a}–${b}`:`Run ${a}`} <span class="muted">(${done.length>=5?"last 4":c.take>1?"last 2":"only run"})</span></dd>
+      <dt>Average</dt><dd>${c.avgRate!==null?c.avgRate.toFixed(2):"–"} mm/min · ${fmtSci(c.avgMs)} m/s</dd></dl></div>`;
+    if(c.totalMin < 110) h += `<p class="muted small" style="margin:0">Tests usually run for about 2 hours.</p>`;
+  }
+  if(done.length > DRIT_TEMPLATE_RUNS) h += `<p class="warn">More than ${DRIT_TEMPLATE_RUNS} runs – check output spreadsheet.</p>`;
+  if(skipped.length) h += `<p class="warn">${skipped.map(r=>"Run "+r.n).join(", ")} ${skipped.length===1?"isn't":"aren't"} complete, so will be left out of the spreadsheet.</p>`;
+  return h;
+}
+function renderDrit(d){
+  cur = {kind:"drit", dritId:d.id, projNum:d.projectNum};
+  const p = projects.get(d.projectNum);
+  bar(dritTitle(d), `#/p/${d.projectNum}`);
+  const {rs, open} = dritState(d);
+  const details = `<h2>Test details</h2><div class="panel"><div class="grid">
+    <div class="field wide"><label>Project</label><p style="margin:0"><span class="tag">${esc(p?p.fullNo:d.projectNum)}</span> ${esc(p&&p.site||"")}</p></div>
+    <div class="field wide"><label for="f_location">Location ref</label><input id="f_location" data-k="location" type="text" value="${esc(d.location)}" autocomplete="off" placeholder="e.g. Pond 29 or SA01"></div>
+    <div class="field wide"><label for="f_date">Test date</label><input id="f_date" data-k="date" type="date" value="${esc(d.date)}"></div>
+    <div class="field wide"><label for="f_by">Undertaken by</label><input id="f_by" data-k="by" type="text" value="${esc(d.by)}" autocapitalize="characters" autocomplete="off" autocorrect="off" spellcheck="false" placeholder="Initials"></div>
+    <div class="field wide"><label for="f_gridRef">Grid reference</label><div class="addrow"><input id="f_gridRef" data-k="gridRef" type="text" value="${esc(d.gridRef)}" autocapitalize="characters" autocomplete="off" autocorrect="off" spellcheck="false" placeholder="e.g. TM 44521 61987"><button class="btn hv" data-act="drit-gps">Get</button></div>
+      <p class="muted small" id="gps_msg" style="margin:4px 0 0">${d.gps&&d.gps.accuracy?`From phone GPS at ${esc(hhmm(new Date(d.gps.at)))}, ±${esc(d.gps.accuracy)} m.`:"Stand at the test and tap Get. Uses your location; works without signal but can take up to 20 seconds."}</p></div>
+    <div class="field wide"><label for="f_w3w">what3words <span class="unit">optional</span></label><input id="f_w3w" data-k="w3w" type="text" value="${esc(d.w3w)}" autocapitalize="none" autocomplete="off" autocorrect="off" spellcheck="false" placeholder="e.g. keyboard.assembles.myths">
+      <p class="muted small" style="margin:4px 0 0" id="w3w_note"></p></div>
+  </div></div>`;
+  let h = (dritError ? `<p class="notice err-notice">${esc(dritError)}</p>` : "") + stripHTML(d);
+  const runsBlock = `<div class="ctrl" id="drit_ctrl">${ctrlHTML(d)}</div>
+    ${rs.length?`<h2>Runs</h2><div class="runs">${rs.map((r,i)=>runCardHTML(d, r, i===rs.length-1, open && i===rs.length-1)).join("")}</div>`:""}`;
+  h += rs.length ? runsBlock + details : details + `<h2>Runs</h2>` + runsBlock;
+  h += `<h2>Results</h2><div class="panel" id="drit_sum"></div>`;
+  h += `<h2>Spreadsheet</h2><div class="panel"><p class="small"><strong>DRIT sheet for this test</strong></p>
+    <p class="muted small">Filled into the company template with the graph. Completed runs only. "Checked by" is left to complete by hand.</p>${emailBlock("export-drit")}</div>`;
+  h += `<h2>Other</h2><div>${sliderHTML("Slide to delete this test","del-drit")}</div>`;
+  $("#app").innerHTML = h;
+  bindEmailTo();
+  dritSigShown = dritSig(d);
+  paintDrit();
+  if(dritFocus){ const el = document.getElementById(dritFocus); dritFocus = "";
+    if(el){ el.focus({preventScroll:true}); el.scrollIntoView({block:"center", behavior:"smooth"}); } }
+}
+// Updates the worked-out numbers without redrawing the inputs.
+function paintDrit(){
+  const d = drits.get(cur.dritId); if(!d) return;
+  if(dritSig(d) !== dritSigShown){ const a=document.activeElement; if(!(a && a.matches && a.matches("main input"))) return route(true); }
+  const rs = runList(d); let prevDone = null;
+  rs.forEach(r=>{
+    const c=$("#rc_"+r.id), w=$("#rw_"+r.id);
+    if(c) c.innerHTML = runCalcHTML(d, r, prevDone);
+    if(w) w.textContent = runWarn(r).join(" ");
+    if(runComplete(r)) prevDone = r;
+  });
+  const done = dritCompleted(d); if(done.length){ const c = dritCalc(done), avgIds = new Set(done.slice(c.from).map(x=>x.id));
+    rs.forEach(r=>{ const el=$("#run_"+r.id); if(el) el.classList.toggle("avg", avgIds.has(r.id)); }); }
+  const ctrl=$("#drit_ctrl"); if(ctrl) ctrl.innerHTML = ctrlHTML(d);
+  const sum=$("#drit_sum"); if(sum) sum.innerHTML = sumHTML(d);
+  const note=$("#w3w_note"); if(note) note.textContent = filled(d.w3w) ? "The sheet will show what3words instead of the grid reference." : "Leave blank to put the grid reference on the sheet.";
+}
+function curDrit(){ return drits.get(cur.dritId); }
+function dritStart(){
+  const d = curDrit(); if(!d) return; const {rs, open} = dritState(d); if(open) return;
+  const id = "r" + uid(), now = new Date();
+  const r = {n:(rs.length ? Math.max(...rs.map(x=>x.n||0)) : 0) + 1, start:hhmm(now), startMs:now.getTime(), end:"", after:"", before:""};
+  setPath(d, "runs."+id, r); queueUpdate("drits", d.id, "runs."+id, r); flush();
+  dritFocus = `r_${id}_after`; route(true);
+}
+function dritEnd(){
+  const d = curDrit(); if(!d) return; const {last, open} = dritState(d); if(!open) return;
+  const now = new Date();
+  applyEdit(`runs.${last.id}.end`, hhmm(now)); applyEdit(`runs.${last.id}.endMs`, now.getTime()); flush();
+  dritFocus = `r_${last.id}_before`; route(true);
+}
+function dritFinish(on){
+  const d = curDrit(); if(!d) return;
+  if(on){ const {last, open} = dritState(d);
+    if(open && !confirm(`Run ${last.n} hasn't been read yet, so it will be left out of the spreadsheet. Finish anyway?`)) return; }
+  applyEdit("finished", on); flush(); toast(on ? "Test finished" : "Test reopened"); route(true);
+}
+function dritRemoveRun(runId){
+  const d = curDrit(); if(!d) return; const r = (d.runs||{})[runId]; if(!r) return;
+  if(!confirm(`Remove run ${r.n}${filled(r.after)||filled(r.before)?" and its readings":""}?`)) return;
+  applyEdit(`runs.${runId}.removed`, true); flush(); route(true);
+}
+async function dritGps(){
+  const d = curDrit(), msg = $("#gps_msg"); if(!d || !msg) return;
+  if(!window.getGridRef){ msg.textContent = "The location code isn't loaded. Open the app once with signal."; return; }
+  msg.className = "small"; msg.textContent = "Finding your position…";
+  try{
+    const g = await getGridRef(acc=>{ const m=$("#gps_msg"); if(m) m.textContent = `Finding your position… ±${acc} m so far`; });
+    applyEdit("gridRef", g.gridRef); applyEdit("gps", {lat:g.lat, lon:g.lon, accuracy:g.accuracy, at:g.at}); flush();
+    const inp = $("#f_gridRef"); if(inp) inp.value = g.gridRef;
+    const m = $("#gps_msg"); if(m){ m.className = "muted small"; m.textContent = `From phone GPS at ${hhmm(new Date(g.at))}, ±${g.accuracy} m.${g.accuracy>15?" That's rough; try again away from buildings and trees.":""}`; }
+  }catch(e){ const m=$("#gps_msg"); if(m){ m.className = "warn"; m.textContent = e.message || String(e); } }
+}
+function excelDay(s){ const m = String(s||"").match(/^(\d{4})-(\d{2})-(\d{2})$/); if(!m) return ""; return Math.round((Date.UTC(+m[1], +m[2]-1, +m[3]) - Date.UTC(1899,11,30))/86400000); }
+async function exportDrit(d, mode){
+  if(!d) return;
+  if(!window.fillDRIT || !window.JSZip){ toast("The template code isn't loaded. Open the app once with signal."); return; }
+  flush();
+  const p = projects.get(d.projectNum), fullNo = p ? p.fullNo : d.projectNum, done = dritCompleted(d), rs = runList(d);
+  if(!done.length){ toast("There are no completed runs to export yet."); return; }
+  let buf;
+  try{
+    if(!dritTemplateBuf){ const res = await fetch("DRIT_template.xlsx"); if(!res.ok) throw new Error("template missing"); dritTemplateBuf = await res.arrayBuffer(); }
+    buf = await fillDRIT(dritTemplateBuf, {fullNo, site:p?p.site||"":"", by:d.by||"", dateSerial:excelDay(d.date), location:d.location||"",
+      w3w:String(d.w3w||"").trim().replace(/^\/+/, ""), gridRef:d.gridRef||"", runs:done});
+  }catch(e){ toast("Couldn't build the spreadsheet: "+(e.message||e), 6000); return; }
+  const name = `${String(fullNo).replace(/,/g,"_")}_Drit_Sheet_${safeName(d.location||"test").replace(/-/g,"_")}.xlsx`;
+  const notes = [];
+  if(done.length > DRIT_TEMPLATE_RUNS) notes.push(`More than ${DRIT_TEMPLATE_RUNS} runs – check output spreadsheet.`);
+  if(done.length < rs.length) notes.push(`${rs.length-done.length} incomplete run${rs.length-done.length===1?"":"s"} left out.`);
+  if(notes.length) toast(notes.join(" "), 6000);
+  const c = dritCalc(done);
+  await exportFile(new File([buf], name, {type:XLSX_TYPE}), mode, `DRIT – ${fullNo} ${p&&p.site||""} – ${d.location||""}`.replace(/\s+/g," ").trim(),
+    [`Double ring infiltrometer test attached: ${name}`, "", `Project: ${fullNo}`, `Site: ${p&&p.site||"–"}`, `Location: ${d.location||"–"}`, `Date: ${fmtDate(d.date,false)}`,
+     `Undertaken by: ${d.by||"–"}`, `Completed runs: ${done.length}`, `Average infiltration capacity: ${c.avgRate!==null?c.avgRate.toFixed(2):"–"} mm/min (${fmtSci(c.avgMs)} m/s)`, ...notes]);
+}
+// Live timers: anything with data-since counts up from that moment.
+setInterval(()=>{ const now = Date.now(); document.querySelectorAll("[data-since]").forEach(el=>{ el.textContent = fmtElapsed(now - Number(el.dataset.since)); }); }, 1000);
+
 /* ---------- Events ---------- */
 function bindAddLoc(getP){
   const go = ()=>{ const inp=$("#addLoc"); const names=parseNames(inp.value); if(!names.length){ inp.focus(); return; } addLocationsTo(getP(), names); route(); };
@@ -1014,6 +1300,7 @@ document.addEventListener("input", e=>{
   const k = e.target.dataset && e.target.dataset.k; if(!k) return;
   applyEdit(k, e.target.value);
   if(cur.kind==="loc" && k==="name"){ const h=$("#bar h1"); if(h) h.textContent=e.target.value||"Unnamed"; }
+  if(cur.kind==="drit"){ if(k==="location"){ const h=$("#bar h1"); if(h) h.textContent=e.target.value||"Infiltration test"; } paintDrit(); }
   paintWarnings();
 });
 document.addEventListener("change", e=>{ if(e.target.dataset && e.target.dataset.k) flush(); });
@@ -1063,6 +1350,14 @@ document.addEventListener("click", e=>{
   else if(act==="dismiss-weather"){ wxResult=null; const b=$("#wxBox"); if(b) b.innerHTML=""; }
   else if(act==="do-restore") restoreLost();
   else if(act==="forget-lost") forgetLost();
+  else if(act==="new-drit") newDrit(p);
+  else if(act==="drit-start") dritStart();
+  else if(act==="drit-end") dritEnd();
+  else if(act==="drit-finish") dritFinish(true);
+  else if(act==="drit-reopen") dritFinish(false);
+  else if(act==="drit-remove-run") dritRemoveRun(btn.dataset.run);
+  else if(act==="drit-gps") dritGps();
+  else if(act==="export-drit") exportDrit(drits.get(cur.dritId), btn.dataset.mode);
   else if(act==="reset-imported"){ try{ localStorage.removeItem(IMPORTED_KEY); }catch(e){} location.hash="#/import"; }
 });
 
@@ -1071,6 +1366,11 @@ function slideDone(act){
   if(act==="discard-legacy"){
     try{ localStorage.removeItem(LEGACY_KEY); localStorage.removeItem(IMPORTED_KEY); }catch(e){}
     location.hash = "#/"; toast("Removed visits from the previous version"); return true;
+  }
+  if(act==="del-drit"){
+    const d = drits.get(cur.dritId); if(!d) return false;
+    d.deleted = true; queueUpdate("drits", d.id, "deleted", true); flush(); saveBackup(); drits.delete(d.id);
+    location.hash = `#/p/${d.projectNum}`; toast("Infiltration test deleted"); return true;
   }
   const v = curVisit(); if(!v) return false;
   if(act==="del-loc"){
@@ -1127,6 +1427,8 @@ function route(keepScroll){
     else if(p[2]==="details") renderDetails(v);
     else renderVisit(v);
   }
+  else if(ready && p[0]==="d" && dritOn() && drits.has(p[1])) renderDrit(drits.get(p[1]));
+  else if(ready && p[0]==="d" && dritOn() && !loaded.drits){ bar("Infiltration test", "#/"); $("#app").innerHTML=`<p class="muted" style="text-align:center;padding:40px 0">Loading…</p>`; }
   else renderHome();
   if(keepScroll) window.scrollTo(0,y);
 }
