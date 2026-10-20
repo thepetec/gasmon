@@ -4,7 +4,7 @@
 // To release an update: change CACHE here AND APP_VERSION in index.html.
 // Other Geosphere tools are on the same web address, so they share this phone storage area.
 // Only this tool's own old caches (names starting "gasfield-") are ever removed.
-const CACHE = "gasfield-3.1";
+const CACHE = "gasfield-3.2";
 const ASSETS = ["./", "./index.html", "./xlsx.full.min.js", "./firebase.js", "./jszip.min.js", "./ggt012.js", "./weather.js", "./GGT012.xltx", "./drit.js", "./DRIT_template.xlsx", "./manifest.webmanifest",
                 "./icon-192.png", "./icon-512.png", "./apple-touch-icon.png"];
 

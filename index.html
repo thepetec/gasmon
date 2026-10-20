@@ -195,7 +195,7 @@ button:focus-visible,a:focus-visible{outline:3px solid var(--hv);outline-offset:
 <script src="weather.js"></script>
 <script>
 "use strict";
-const APP_VERSION = "3.1"; // keep in step with CACHE in sw.js
+const APP_VERSION = "3.2"; // keep in step with CACHE in sw.js
 
 /* ---------- Settings ---------- */
 const FIREBASE_CONFIG = {
@@ -1254,28 +1254,49 @@ function stripHTML(d){
   return `<div class="strip" aria-label="Other tests running">${others.map(x=>{ const {rs,last,open}=dritState(x); const since=last?timeMs(x,last,open?"start":"end"):null;
     return `<a href="#/d/${x.id}"><span class="tag">${esc(dritTitle(x))}</span><span>${open?`Fill ${rs.length}`:"Refill"}${since?` · <span data-since="${since}">${fmtElapsed(Date.now()-since)}</span>`:""}</span></a>`; }).join("")}</div>`;
 }
+// The next thing to record. One level box at the top adapts to it; the button stamps the time
+// and writes the level into the fill card below, so the user never has to scroll down.
+function dritStep(d){
+  const {rs, last, open} = dritState(d);
+  if(d.finished) return {kind:"finished"};
+  if(!rs.length) return {kind:"start", n:1};
+  if(open && !isNum(last.after)) return {kind:"after", n:last.n, run:last};
+  if(open) return {kind:"end", n:last.n, run:last};
+  if(!isNum(last.before)) return {kind:"before", n:last.n, run:last};
+  return {kind:"start", n:(last.n||rs.length)+1};
+}
+function levelBoxHTML(label, act, btn, extra){
+  return `<div class="field" style="margin:0 0 10px"><label for="drit_level">${label} <span class="unit">cm</span></label>
+    <input id="drit_level" data-level-act="${act}" type="text" inputmode="decimal" autocomplete="off" autocorrect="off" spellcheck="false" enterkeyhint="done" placeholder="e.g. 5.0">
+    <p class="warn" id="drit_level_w"></p></div>
+    ${extra ? `<div class="row"><button class="btn hv" data-act="${act}">${btn}</button>${extra}</div>` : `<button class="btn hv block" data-act="${act}">${btn}</button>`}`;
+}
 function ctrlHTML(d){
   const {rs, last, open} = dritState(d), first = rs[0], t0 = first ? timeMs(d, first, "start") : null;
-  const today = d.date===todayStr();
+  const today = d.date===todayStr(), step = dritStep(d);
   const total = t0 && today && !d.finished ? `<p class="small" style="margin:0 0 10px">Test time <b data-since="${t0}">${fmtElapsed(Date.now()-t0)}</b> <span class="muted">of about 2 hours</span></p>` : "";
-  if(d.finished) return `<p class="lbl">Test finished</p><p class="small" style="margin:4px 0 10px">${rs.filter(runComplete).length} completed fills. Reopen to add or change fills.</p>
+  if(step.kind==="finished") return `<p class="lbl">Test finished</p><p class="small" style="margin:4px 0 10px">${rs.filter(runComplete).length} completed fills. Reopen to add or change fills.</p>
     <button class="btn block" data-act="drit-reopen">Reopen test</button>`;
-  if(!rs.length) return `<p class="lbl">Ready</p><p style="margin:4px 0 12px">Fill the inner ring, then tap Start. The time is recorded now and you can change it afterwards.</p>
-    <button class="btn hv block" data-act="drit-start">Filled — start fill 1</button>`;
+  if(!rs.length) return `<p class="lbl">Ready</p><p style="margin:4px 0 12px">Fill the inner ring, enter the level and tap Start. The time is recorded when you tap.</p>
+    ${levelBoxHTML("Level after filling", "drit-start", "Filled — start fill 1")}`;
   if(open){
     const since = timeMs(d, last, "start");
-    // Estimate when this run will have dropped about 10 cm, from the last completed run's rate.
+    // Estimate when this fill will have dropped about 10 cm, from the last completed fill's rate.
     const prev = rs.slice(0,-1).reverse().find(runComplete), rate = prev ? runRate(prev) : null;
     let est = "";
     if(rate && rate>0 && since){ const at = new Date(since + 100/rate*60000); est = `<p class="small muted" style="margin:0 0 10px">At fill ${prev.n}'s rate, about 10 cm will have gone by <b>${hhmm(at)}</b>.</p>`; }
-    return `<p class="lbl">Fill ${rs.length} running${filled(last.after)?"":" · enter the level after filling"}</p>
-      <div class="timer">${since && today ? `<span data-since="${since}">${fmtElapsed(Date.now()-since)}</span>` : esc(last.start||"–")}</div>${est}${total}
-      <button class="btn hv block" data-act="drit-end">Read level now — end fill ${rs.length}</button>`;
+    const box = step.kind==="after"
+      ? levelBoxHTML(`Level after filling, fill ${last.n}`, "drit-save-after", "Save level")
+      : levelBoxHTML("Level before refill", "drit-end", `Read level — end fill ${last.n}`);
+    return `<p class="lbl">Fill ${rs.length} running</p>
+      <div class="timer">${since && today ? `<span data-since="${since}">${fmtElapsed(Date.now()-since)}</span>` : esc(last.start||"–")}</div>${est}${total}${box}`;
   }
   const since = timeMs(d, last, "end");
-  return `<p class="lbl">Fill ${rs.length} read${isNum(last.before)?"":" · enter the level before refill"}</p>
-    <div class="timer">${since && today ? `<span data-since="${since}">${fmtElapsed(Date.now()-since)}</span>` : esc(last.end||"–")}</div>${total}
-    <div class="row"><button class="btn hv" data-act="drit-start">Refilled — start fill ${rs.length+1}</button><button class="btn" data-act="drit-finish">Finish test</button></div>`;
+  const box = step.kind==="before"
+    ? levelBoxHTML(`Level before refill, fill ${last.n}`, "drit-save-before", "Save level")
+    : levelBoxHTML("Level after refilling", "drit-start", `Refilled — start fill ${step.n}`, `<button class="btn" data-act="drit-finish">Finish test</button>`);
+  return `<p class="lbl">Fill ${rs.length} read · refill due</p>
+    <div class="timer">${since && today ? `<span data-since="${since}">${fmtElapsed(Date.now()-since)}</span>` : esc(last.end||"–")}</div>${total}${box}`;
 }
 function runCalcHTML(d, r, prevDone){
   if(!runComplete(r)) return filled(r.end) ? "" : `<span class="muted">Running</span>`;
@@ -1349,23 +1370,50 @@ function paintDrit(){
   });
   const done = dritCompleted(d); if(done.length){ const c = dritCalc(done), avgIds = new Set(done.slice(c.from).map(x=>x.id));
     rs.forEach(r=>{ const el=$("#run_"+r.id); if(el) el.classList.toggle("avg", avgIds.has(r.id)); }); }
-  const ctrl=$("#drit_ctrl"); if(ctrl) ctrl.innerHTML = ctrlHTML(d);
+  const ctrl=$("#drit_ctrl"); if(ctrl){
+    const old = $("#drit_level"), val = old ? old.value : "", act = old ? old.dataset.levelAct : "", foc = old && old===document.activeElement, w = $("#drit_level_w");
+    const warn = w ? w.textContent : "";
+    ctrl.innerHTML = ctrlHTML(d);
+    const nw = $("#drit_level");
+    if(nw && act && nw.dataset.levelAct===act){ nw.value = val; if(warn) $("#drit_level_w").textContent = warn; if(foc){ nw.focus({preventScroll:true}); try{ nw.setSelectionRange(val.length, val.length); }catch(e){} } }
+  }
   const sum=$("#drit_sum"); if(sum) sum.innerHTML = sumHTML(d);
   const note=$("#w3w_note"); if(note) note.textContent = filled(d.w3w) ? "The sheet will show what3words instead of the grid reference." : "Leave blank to put the grid reference on the sheet.";
 }
 function curDrit(){ return drits.get(cur.dritId); }
+// Reads the level box at the top. Returns the value, or null after showing why it can't be used.
+function levelFromBox(){
+  const inp = $("#drit_level"), w = $("#drit_level_w"); if(!inp) return null;
+  const v = inp.value.trim().replace(",", ".");
+  const bad = msg => { if(w) w.textContent = msg; inp.focus(); return null; };
+  if(!v) return bad("Enter the level first.");
+  if(!isNum(v)) return bad("That isn't a number.");
+  return v;
+}
 function dritStart(){
   const d = curDrit(); if(!d) return; const {rs, open} = dritState(d); if(open) return;
+  const level = levelFromBox(); if(level===null) return;
   const id = "r" + uid(), now = new Date();
-  const r = {n:(rs.length ? Math.max(...rs.map(x=>x.n||0)) : 0) + 1, start:hhmm(now), startMs:now.getTime(), end:"", after:"", before:""};
+  const r = {n:(rs.length ? Math.max(...rs.map(x=>x.n||0)) : 0) + 1, start:hhmm(now), startMs:now.getTime(), end:"", after:level, before:""};
   setPath(d, "runs."+id, r); queueUpdate("drits", d.id, "runs."+id, r); flush();
-  dritFocus = `r_${id}_after`; route(true);
+  if(document.activeElement) document.activeElement.blur();
+  toast(`Fill ${r.n} started at ${r.start}`); route(); // back to the top, where the timer and level box are
 }
 function dritEnd(){
   const d = curDrit(); if(!d) return; const {last, open} = dritState(d); if(!open) return;
+  const level = levelFromBox(); if(level===null) return;
   const now = new Date();
-  applyEdit(`runs.${last.id}.end`, hhmm(now)); applyEdit(`runs.${last.id}.endMs`, now.getTime()); flush();
-  dritFocus = `r_${last.id}_before`; route(true);
+  applyEdit(`runs.${last.id}.end`, hhmm(now)); applyEdit(`runs.${last.id}.endMs`, now.getTime()); applyEdit(`runs.${last.id}.before`, level); flush();
+  if(document.activeElement) document.activeElement.blur();
+  toast(`Fill ${last.n} read at ${hhmm(now)}`); route(); // back to the top, where the timer and level box are
+}
+// For a level left blank (e.g. cleared in the fill card): saves it without changing any time.
+function dritSaveLevel(k){
+  const d = curDrit(); if(!d) return; const {last} = dritState(d); if(!last) return;
+  const level = levelFromBox(); if(level===null) return;
+  applyEdit(`runs.${last.id}.${k}`, level); flush();
+  if(document.activeElement) document.activeElement.blur();
+  route(); // back to the top, where the timer and level box are
 }
 function dritFinish(on){
   const d = curDrit(); if(!d) return;
@@ -1426,6 +1474,7 @@ function bindEmailTo(){
   $("#emailTo").addEventListener("input", e=>{ try{ localStorage.setItem("gasfield.emailTo", e.target.value.trim()); }catch(err){} $("#emailSuffix").hidden = e.target.value.includes("@"); });
 }
 document.addEventListener("input", e=>{
+  if(e.target.id==="drit_level"){ const w=$("#drit_level_w"); if(w) w.textContent=""; return; }
   const k = e.target.dataset && e.target.dataset.k; if(!k) return;
   applyEdit(k, e.target.value);
   if(cur.kind==="loc" && k==="name"){ const h=$("#bar h1"); if(h) h.textContent=e.target.value||"Unnamed"; }
@@ -1434,6 +1483,7 @@ document.addEventListener("input", e=>{
 });
 document.addEventListener("change", e=>{ if(e.target.dataset && e.target.dataset.k) flush(); });
 document.addEventListener("keydown", e=>{
+  if(e.key==="Enter" && e.target.id==="drit_level"){ e.preventDefault(); const b=document.querySelector(`#drit_ctrl [data-act="${e.target.dataset.levelAct}"]`); if(b) b.click(); return; }
   if(e.key!=="Enter" || !e.target.matches("input[data-k]")) return;
   e.preventDefault(); const ins=[...document.querySelectorAll("main input[data-k], main textarea[data-k]")]; const i=ins.indexOf(e.target);
   if(ins[i+1]) ins[i+1].focus(); else e.target.blur();
@@ -1485,6 +1535,8 @@ document.addEventListener("click", e=>{
   else if(act==="new-drit") newDrit(p);
   else if(act==="drit-start") dritStart();
   else if(act==="drit-end") dritEnd();
+  else if(act==="drit-save-after") dritSaveLevel("after");
+  else if(act==="drit-save-before") dritSaveLevel("before");
   else if(act==="drit-finish") dritFinish(true);
   else if(act==="drit-reopen") dritFinish(false);
   else if(act==="drit-remove-run") dritRemoveRun(btn.dataset.run);
