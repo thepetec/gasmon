@@ -184,7 +184,19 @@ async function fillDRIT(buf, data){
   if(String(data.w3w||"").trim()){ setStr(sh, "C9", "what3words:"); setStr(sh, "D9", String(data.w3w).trim()); }
   else { setStr(sh, "C9", "Grid Reference:"); setStr(sh, "D9", data.gridRef || ""); }
 
-  // Runs
+  setStr(sh, "C12", "Fill");
+
+  // Times are written as time elapsed since the start of fill 1 (0:00:00), as the template's user guide asks.
+  // Each fill is placed after the previous one, so a test running past midnight still counts up.
+  const rel = []; let prevEnd = null, t0 = null;
+  runs.forEach(r=>{
+    let s = r.start; if(prevEnd!==null) while(s < prevEnd - 720) s += 1440;
+    let e = r.end; while(e < s) e += 1440;
+    if(t0===null) t0 = s;
+    rel.push({start:s - t0, end:e - t0}); prevEnd = e;
+  });
+
+  // Fills (the template calls them runs)
   const lastRow = FIRST + Math.max(TEMPLATE_RUNS, n) - 1;
   for(let r=FIRST, i=0; r<=lastRow; r++, i++){
     const used = i < n, avg = used && i >= calc.from;
@@ -194,8 +206,7 @@ async function fillDRIT(buf, data){
     if(!used){ ["D","E","F","G","H","I","J","K","L","M"].forEach(c=>clearCell(sh, c+r)); }
     else {
       const run = runs[i], row = calc.rows[i];
-      let end = run.end; if(end < run.start) end += 1440;
-      setNum(sh, "D"+r, run.start/1440); setNum(sh, "E"+r, end/1440);
+      setNum(sh, "D"+r, rel[i].start/1440); setNum(sh, "E"+r, rel[i].end/1440);
       setNum(sh, "F"+r, run.after); setNum(sh, "G"+r, run.before);
       setFormula(sh, "H"+r, r===FIRST ? `(E${r}-D$${FIRST})*1440` : `((E${r}-D${r})*1440)+H${r-1}`, row.cum);
       setFormula(sh, "I"+r, `(E${r}-D${r})*1440`, row.interval);

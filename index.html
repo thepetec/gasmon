@@ -151,7 +151,7 @@ button:focus-visible,a:focus-visible{outline:3px solid var(--hv);outline-offset:
 .linkbtn{border:0;background:none;padding:0;color:var(--hv-text);font-weight:700;text-decoration:underline;cursor:pointer;font-size:inherit}
 .err-notice{border-left-color:var(--warn);color:var(--warn);font-weight:600}
 .item .tag{flex:0 0 auto}
-/* Infiltration tests */
+/* DRIT tests */
 .ctrl{border:2px solid var(--hv);border-radius:12px;background:var(--surface);padding:14px}
 .ctrl .lbl{font-size:14px;font-weight:700;color:var(--muted);margin:0}
 .timer{font-size:44px;font-weight:800;line-height:1.1;font-variant-numeric:tabular-nums;margin:2px 0 6px}
@@ -167,6 +167,20 @@ button:focus-visible,a:focus-visible{outline:3px solid var(--hv);outline-offset:
 .strip{display:flex;gap:8px;overflow-x:auto;margin:0 0 12px;padding-bottom:2px}
 .strip a{flex:0 0 auto;display:flex;align-items:center;gap:8px;border:1px solid var(--line);background:var(--surface);border-radius:10px;padding:6px 10px;text-decoration:none;font-size:14px;font-weight:600;font-variant-numeric:tabular-nums}
 .strip .tag{font-size:14px;min-width:0;padding:3px 8px}
+/* Module launcher and module labels */
+.ttl{flex:1;min-width:0}
+.ttl h1{display:block}
+.ttl small{display:block;font-size:11px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;opacity:.75;line-height:1.2}
+.tiles{display:flex;flex-direction:column;gap:12px}
+.tile{display:flex;align-items:center;gap:16px;background:var(--surface);border:2px solid var(--line);border-left:8px solid var(--hv);border-radius:14px;padding:18px 16px;text-decoration:none;min-height:96px}
+.tile:active{border-color:var(--hv)}
+.tile svg{flex:0 0 auto;width:48px;height:48px;color:var(--hv-text)}
+.tile .main{flex:1;min-width:0}
+.tile .title{font-size:20px;font-weight:800}
+.tile .sub{font-size:14px;color:var(--muted)}
+.links{display:flex;flex-direction:column;gap:8px;margin-top:8px}
+.switch{display:flex;align-items:center;gap:10px;margin-top:22px;padding:12px 14px;border:1px dashed var(--line);border-radius:12px;text-decoration:none;font-weight:650}
+.switch span{flex:1}
 </style>
 </head>
 <body>
@@ -181,7 +195,7 @@ button:focus-visible,a:focus-visible{outline:3px solid var(--hv);outline-offset:
 <script src="weather.js"></script>
 <script>
 "use strict";
-const APP_VERSION = "2.9"; // keep in step with CACHE in sw.js
+const APP_VERSION = "3.1"; // keep in step with CACHE in sw.js
 
 /* ---------- Settings ---------- */
 const FIREBASE_CONFIG = {
@@ -195,7 +209,7 @@ const FIREBASE_CONFIG = {
 const EMAIL_DOMAIN = "@geosphere-environmental.co.uk";
 const EXTRA_ALLOWED_EMAILS = ["petercoynework@gmail.com"]; // testing only; must match the Firestore rules
 const PROJECT_RE = /^(\d{4,5})((?:,[A-Z]{2,})+)$/;
-// Infiltration tests (DRIT) are only shown to these accounts while they're being tested.
+// DRIT tests are only shown to these accounts while they're being tested.
 // Add more addresses here to open it up; everyone else sees the gas tool exactly as before.
 const DRIT_USERS = ["petercoynework@gmail.com"];
 
@@ -259,7 +273,22 @@ function msOf(v){ const t = v && (v.toMillis ? v.toMillis() : (v.seconds ? v.sec
 // so finishing gas monitoring doesn't hide the project from the other tools.
 // Older projects only have the original shared "completed" field, which is read as the gas flag.
 function gasDone(p){ return !!(p && (p.gasCompleted ?? p.completed)); }
-function dritOn(){ return !!(user && DRIT_USERS.includes(String(user.email||"").toLowerCase())); }
+function dritDone(p){ return !!(p && p.dritCompleted); }
+function modDone(p, mod){ return mod==="drit" ? dritDone(p) : gasDone(p); }
+// Which module lists a project appears in: the module it was started from, or any module that has records for it.
+// Projects from before modules existed have no "modules" field and count as gas projects.
+function inMod(p, mod){
+  if(mod==="drit") return !!((p.modules && p.modules.drit) || projDrits(p.id).length);
+  return !p.modules || !!p.modules.gas || projVisits(p.id).length>0;
+}
+function markMod(p, mod){ if(!p || (p.modules && p.modules[mod])) return; p.modules = p.modules||{}; p.modules[mod] = true; queueUpdate("projects", p.id, "modules."+mod, true); }
+const MODS = {gas:{label:"Gas monitoring", home:"#/gas", proj:n=>`#/p/${n}`}, drit:{label:"DRIT tests", home:"#/drit", proj:n=>`#/dp/${n}`}};
+function plannedVisits(p){ const n = parseInt(String(p && p.gasVisitsPlanned || "").trim(), 10); return n>0 && n<100 ? n : 0; }
+// A visit's place in the sequence: its visit number if it has one, otherwise its order by date.
+function visitOrdinal(v){ const i = VISIT_NOS.indexOf(v.visitNo); if(i>=0) return i+1; return projVisits(v.projectNum).findIndex(x=>x.id===v.id) + 1; }
+// Links must be web addresses. A pasted address without https:// gets it added.
+function safeUrl(u){ u = String(u||"").trim(); if(!u) return ""; if(!/^[a-z][a-z0-9+.-]*:/i.test(u)) u = "https://" + u.replace(/^\/+/, ""); return /^https?:\/\/[^\s]+$/i.test(u) ? u : ""; }
+function dritOn(){ return !!user; } // DRIT tests are open to everyone (still marked work in progress)
 function getPath(o, path){ return path.split(".").reduce((x,k)=>x==null?undefined:x[k], o); }
 function emailAllowed(e){ e=String(e||"").toLowerCase(); return e.endsWith(EMAIL_DOMAIN) || EXTRA_ALLOWED_EMAILS.includes(e); }
 
@@ -267,7 +296,7 @@ function emailAllowed(e){ e=String(e||"").toLowerCase(); return e.endsWith(EMAIL
 let app, auth, fdb, user = null;
 const projects = new Map(); // num -> project
 const visits = new Map();   // id -> visit
-const drits = new Map();    // id -> infiltration test
+const drits = new Map();    // id -> DRIT test
 let loaded = {projects:false, visits:false, drits:false};
 let pendingRemote = {projects:false, visits:false, drits:false};
 let dritError = "";
@@ -309,15 +338,15 @@ function startListeners(){
     reapplyPending("visits", visits);
     loaded.visits = true; pendingRemote.visits = snap.metadata.hasPendingWrites; syncError=""; onData();
   }, onErr));
-  // Infiltration tests have their own error so a missing database rule can't upset the gas tool.
+  // DRIT tests have their own error so a missing database rule can't upset the gas tool.
   if(dritOn()) unsubs.push(FB.onSnapshot(FB.query(FB.collection(fdb,"drits"), FB.where("deleted","==",false)), {includeMetadataChanges:true}, snap => {
     drits.clear(); snap.forEach(d => drits.set(d.id, {...d.data(), id:d.id}));
     reapplyPending("drits", drits);
     loaded.drits = true; pendingRemote.drits = snap.metadata.hasPendingWrites; dritError=""; onData();
   }, e => {
     dritError = e && e.code==="permission-denied"
-      ? "The database refused access to infiltration tests. Add a rule for the drits collection (the same as the one for visits) and publish it. Don't record real tests until this clears."
-      : "Infiltration test sync problem: " + (e && (e.code||e.message));
+      ? "The database refused access to DRIT tests. Add a rule for the drits collection (the same as the one for visits) and publish it. Don't record real tests until this clears."
+      : "DRIT test sync problem: " + (e && (e.code||e.message));
     loaded.drits = true; paintStatus(); route(true);
   }));
 }
@@ -386,7 +415,8 @@ function prevValue(v, locId, k){
   return null;
 }
 function suggestVisitNo(num){ const used=projVisits(num).map(v=>VISIT_NOS.indexOf(v.visitNo)); const max=Math.max(-1,...used); return VISIT_NOS[max+1] || ""; }
-function visitTitle(v){ const p=projects.get(v.projectNum); return `${p?p.fullNo:v.projectNum}${v.visitNo?" · "+v.visitNo+" visit":""}`; }
+function visitTitle(v){ const p=projects.get(v.projectNum), pl=plannedVisits(p), n=visitOrdinal(v);
+  return `${p?p.fullNo:v.projectNum}${v.visitNo?" · "+v.visitNo+" visit":""}${pl&&n>=1&&n<=pl?` (${n}/${pl})`:""}`; }
 
 /* ---------- Validation (advisory only) ---------- */
 function tokenOK(v){ const t=String(v).trim().toLowerCase(); return t==="nm"||t==="dry"||/^<\s*\d*\.?\d+$/.test(t); }
@@ -449,9 +479,10 @@ function applyEdit(k, value){
 }
 
 /* ---------- Status bar ---------- */
-function bar(title, backHref){
-  $("#bar").innerHTML = (backHref?`<button class="back" data-act="go" data-href="${backHref}" aria-label="Back">‹ Back</button>`:"")+
-    `<h1>${esc(title)}</h1><span class="status" id="status" role="status"></span>`;
+function bar(title, backHref, mod, backLabel){
+  const lab = mod && dritOn() ? `<small>${esc(MODS[mod].label)}</small>` : "";
+  $("#bar").innerHTML = (backHref?`<button class="back" data-act="go" data-href="${backHref}" aria-label="Back">‹ ${esc(backLabel||"Back")}</button>`:"")+
+    `<div class="ttl">${lab}<h1>${esc(title)}</h1></div><span class="status" id="status" role="status"></span>`;
   paintStatus();
 }
 function paintStatus(){
@@ -498,7 +529,7 @@ function refreshForm(){
     if((el.value||"") !== String(v??"")) el.value = v ?? "";
   });
   document.querySelectorAll("main .seg").forEach(seg=>{ const val=o[seg.dataset.set] || SEG_DEFAULTS[seg.dataset.set] || ""; seg.querySelectorAll("button").forEach(b=>b.setAttribute("aria-pressed", String(b.dataset.val===val))); });
-  paintWarnings();
+  paintWarnings(); paintProjWarnings();
   if(cur.kind==="drit") paintDrit();
 }
 function onData(){
@@ -506,7 +537,7 @@ function onData(){
   if(!loaded.projects || !loaded.visits) return;
   if(cur.kind==="drit" && !drits.has(cur.dritId)) return route();
   if(["details","fresh","loc","projedit","drit"].includes(cur.kind) && document.querySelector("main [data-k]")) return refreshForm();
-  if(cur.kind==="home" && $("#plist")) { $("#plist").innerHTML = projectListHTML(); return; }
+  if(cur.kind==="home" && $("#plist")) { $("#plist").innerHTML = projectListHTML(cur.mod); return; }
   const a = document.activeElement; if(a && a.matches && a.matches("main input, main textarea")) return; // don't interrupt typing
   if(cur.kind!=="newproj" && cur.kind!=="import" && cur.kind!=="auth") route(true);
 }
@@ -569,64 +600,113 @@ async function verifyContinue(){
   startListeners(); location.hash="#/"; route();
 }
 
-/* ---------- Screens: home and projects ---------- */
-let homeSearch = "", showCompleted = false;
-function renderHome(){
-  cur={kind:"home"};
-  bar("Gas monitoring");
+/* ---------- Screens: launcher, module homes and projects ---------- */
+let homeSearch = {gas:"", drit:""}, showCompleted = {gas:false, drit:false};
+const LAST_MOD_KEY = "gasfield.lastModule";
+function setLastMod(m){ try{ localStorage.setItem(LAST_MOD_KEY, m); }catch(e){} }
+function lastMod(){ try{ const m = localStorage.getItem(LAST_MOD_KEY); return MODS[m] ? m : ""; }catch(e){ return ""; } }
+function topNoticesHTML(){
   const standalone = window.matchMedia("(display-mode: standalone)").matches || navigator.standalone;
   let h = "";
   if(syncError) h += `<p class="notice err-notice">${esc(syncError)}</p>`;
   if(!standalone) h += `<p class="notice">Add this page to your home screen so it opens without signal.</p>`;
-  const legacy = legacyVisits();
-  if(legacy.length) h += `<a class="item" href="#/import" style="border-color:var(--hv)"><div class="main"><div class="title">${legacy.length} visit${legacy.length===1?"":"s"} from the previous version</div><div class="sub">Still only on this phone. Tap to file them into projects.</div></div><span class="chev">›</span></a>`;
-  h += `<div class="addrow" style="margin:6px 0 4px"><input type="text" id="search" placeholder="Search project number or site" value="${esc(homeSearch)}" autocomplete="off" aria-label="Search projects"></div>`;
-  h += `<div id="plist">${projectListHTML()}</div>`;
-  h += `<div style="margin-top:16px"><a class="btn primary block" href="#/newproject">New project</a></div>`;
-  if(!legacy.length && legacyAll().length) h += `<p class="muted small version" style="margin-top:18px"><button class="linkbtn" data-act="reset-imported">File visits from the previous version again</button></p>`;
-  h += `<p class="muted small version">Signed in as ${esc(user.displayName||user.email)} · <button class="linkbtn" data-act="sign-out">Sign out</button><br>Version ${APP_VERSION}</p>`;
-  $("#app").innerHTML = h;
-  $("#search").addEventListener("input", e=>{ homeSearch=e.target.value; $("#plist").innerHTML=projectListHTML(); });
+  return h;
 }
-function projectListHTML(){
-  if(!loaded.projects || !loaded.visits) return `<div class="panel empty"><p class="muted">Loading…</p></div>`;
-  const q = homeSearch.trim().toLowerCase();
-  const all = [...projects.values()].filter(p => !q || String(p.fullNo).toLowerCase().includes(q) || String(p.site||"").toLowerCase().includes(q));
-  const live = all.filter(p=>!gasDone(p)), done = all.filter(p=>gasDone(p));
-  const sortFn = (a,b) => String(lastActivity(b)||"").localeCompare(String(lastActivity(a)||"")) || String(b.id).localeCompare(String(a.id));
-  const item = p => { const vs=projVisits(p.id), last=vs[vs.length-1], nd=dritOn()?projDrits(p.id).length:0;
+function footerHTML(){ return `<p class="muted small version">Signed in as ${esc(user.displayName||user.email)} · <button class="linkbtn" data-act="sign-out">Sign out</button><br>Version ${APP_VERSION}</p>`; }
+const ICONS = {
+  gas:`<svg viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 44V22h8v22"/><path d="M14 22h20"/><path d="M24 16c-3-3-3-6 0-9"/><path d="M31 15c-2-2-2-4 0-6"/><path d="M17 15c-2-2-2-4 0-6"/><path d="M10 44h28"/></svg>`,
+  drit:`<svg viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><ellipse cx="24" cy="12" rx="18" ry="5"/><ellipse cx="24" cy="12" rx="9" ry="2.5"/><path d="M6 12v16c0 2.8 8 5 18 5s18-2.2 18-5V12"/><path d="M24 36v6"/><path d="M18 40l6 4 6-4"/></svg>`
+};
+const DRIT_WIP = `<p class="notice" style="border-left-color:var(--warn)"><strong>Work in progress.</strong> DRIT tests are still being tested. Keep a paper record as backup and check the spreadsheet before using it.</p>`;
+function renderLauncher(){
+  cur={kind:"launcher"};
+  bar("Field tools");
+  let h = topNoticesHTML();
+  const lost = lostRecords(), nLost = lost.projects.length + lost.visits.length + lost.drits.length;
+  if(nLost) h += `<a class="item" href="#/restore" style="border-color:var(--warn);margin-bottom:8px"><div class="main"><div class="title">${nLost} record${nLost===1?"":"s"} saved on this phone ${nLost===1?"isn't":"aren't"} in the database</div><div class="sub">Tap to restore them.</div></div><span class="chev">›</span></a>`;
+  const ready = loaded.projects && loaded.visits;
+  const count = mod => ready ? [...projects.values()].filter(p=>inMod(p,mod) && !modDone(p,mod)).length : null;
+  const nGas = count("gas"), nDrit = loaded.drits ? count("drit") : null, nRun = [...drits.values()].filter(isRunning).length;
+  const plural = (n, w) => n===null ? "Loading…" : `${n} ongoing ${w}${n===1?"":"s"}`;
+  h += `<h2>Choose a tool</h2><div class="tiles">
+    <a class="tile" href="#/gas">${ICONS.gas}<div class="main"><div class="title">Gas monitoring</div><div class="sub">Gas and groundwater monitoring visits · ${plural(nGas,"project")}</div></div><span class="chev">›</span></a>
+    <a class="tile" href="#/drit">${ICONS.drit}<div class="main"><div class="title">DRIT tests <span class="pill warn-p">WIP</span></div><div class="sub">Double ring infiltrometer · ${nRun?`<b style="color:var(--hv-text)">${nRun} running</b> · `:""}${plural(nDrit,"project")}</div></div><span class="chev">›</span></a>
+  </div>`;
+  h += `<p class="muted small" style="margin-top:12px">Projects are shared between tools. Each tool keeps its own records and its own completed list.</p>`;
+  h += footerHTML();
+  $("#app").innerHTML = h;
+}
+function renderHome(mod){
+  mod = mod || "gas";
+  cur={kind:"home", mod};
+  setLastMod(mod);
+  bar(mod==="drit" ? "DRIT tests" : MODS[mod].label, dritOn() ? "#/" : "", null, "Tools");
+  let h = topNoticesHTML();
+  const legacy = mod==="gas" ? legacyVisits() : [];
+  if(legacy.length) h += `<a class="item" href="#/import" style="border-color:var(--hv)"><div class="main"><div class="title">${legacy.length} visit${legacy.length===1?"":"s"} from the previous version</div><div class="sub">Still only on this phone. Tap to file them into projects.</div></div><span class="chev">›</span></a>`;
+  h += `<div class="addrow" style="margin:6px 0 4px"><input type="text" id="search" placeholder="Search project number or site" value="${esc(homeSearch[mod])}" autocomplete="off" aria-label="Search projects"></div>`;
+  h += `<div id="plist">${projectListHTML(mod)}</div>`;
+  h += `<div style="margin-top:16px"><a class="btn primary block" href="#/newproject/${mod}">New project</a></div>`;
+  if(mod==="gas" && !legacy.length && legacyAll().length) h += `<p class="muted small version" style="margin-top:18px"><button class="linkbtn" data-act="reset-imported">File visits from the previous version again</button></p>`;
+  h += footerHTML();
+  $("#app").innerHTML = h;
+  $("#search").addEventListener("input", e=>{ homeSearch[mod]=e.target.value; $("#plist").innerHTML=projectListHTML(mod); });
+}
+function projectListHTML(mod){
+  mod = mod || "gas";
+  if(!loaded.projects || !loaded.visits || (mod==="drit" && !loaded.drits)) return `<div class="panel empty"><p class="muted">Loading…</p></div>`;
+  const q = homeSearch[mod].trim().toLowerCase();
+  const match = p => !q || String(p.fullNo).toLowerCase().includes(q) || String(p.site||"").toLowerCase().includes(q);
+  const all = [...projects.values()].filter(p => inMod(p,mod) && match(p));
+  const live = all.filter(p=>!modDone(p,mod)), done = all.filter(p=>modDone(p,mod));
+  const lastOf = p => { if(mod==="drit"){ const ds=projDrits(p.id); return ds.length ? ds[ds.length-1].date : ""; } return lastActivity(p); };
+  const sortFn = (a,b) => String(lastOf(b)||"").localeCompare(String(lastOf(a)||"")) || String(b.id).localeCompare(String(a.id));
+  const gasItem = p => { const vs=projVisits(p.id), last=vs[vs.length-1], pl=plannedVisits(p);
     return `<a class="item" href="#/p/${p.id}"><span class="tag">${esc(p.fullNo)}</span><div class="main"><div class="title">${esc(p.site||"No site name")}</div>
-      <div class="sub">${vs.length} visit${vs.length===1?"":"s"}${last?` · last ${esc(fmtDate(last.datetime,false))}`:""}${nd?` · ${nd} DRIT${nd===1?"":"s"}`:""}</div></div><span class="chev">›</span></a>`; };
+      <div class="sub">${pl?`${vs.length} of ${pl} visit${pl===1?"":"s"}`:`${vs.length} visit${vs.length===1?"":"s"}`}${last?` · last ${esc(fmtDate(last.datetime,false))}`:""}</div>
+      ${pl?`<div class="prog"><i style="width:${Math.min(100, vs.length/pl*100)}%"></i></div>`:""}</div><span class="chev">›</span></a>`; };
+  const dritItem = p => { const ds=projDrits(p.id), last=ds[ds.length-1], nr=ds.filter(isRunning).length;
+    return `<a class="item" href="#/dp/${p.id}"><span class="tag">${esc(p.fullNo)}</span><div class="main"><div class="title">${esc(p.site||"No site name")}</div>
+      <div class="sub">${ds.length} test${ds.length===1?"":"s"}${nr?` · ${nr} running`:""}${last?` · last ${esc(fmtDate(last.date,false))}`:""}</div></div><span class="chev">›</span></a>`; };
+  const item = mod==="drit" ? dritItem : gasItem;
   let h = "";
-  if(dritOn() && !q) h += runningListHTML();
+  if(mod==="drit" && !q){ h += DRIT_WIP + runningListHTML(); if(dritError) h += `<p class="notice err-notice">${esc(dritError)}</p>`; }
   const lost = lostRecords(), nLost = lost.projects.length + lost.visits.length + lost.drits.length;
   if(nLost) h += `<a class="item" href="#/restore" style="border-color:var(--warn);margin-top:8px"><div class="main"><div class="title">${nLost} record${nLost===1?"":"s"} saved on this phone ${nLost===1?"isn't":"aren't"} in the database</div><div class="sub">Tap to restore them.</div></div><span class="chev">›</span></a>`;
   h += `<h2>${q?"Matching projects":"Ongoing projects"}</h2>`;
   h += live.length ? `<div class="list">${live.sort(sortFn).map(item).join("")}</div>` : `<div class="panel empty"><p class="muted">${q?"No ongoing projects match.":"No ongoing projects."}</p></div>`;
   if(done.length){
-    h += `<button class="btn block" style="margin-top:14px" data-act="toggle-completed">${showCompleted?"Hide":"Show"} completed projects (${done.length})</button>`;
-    if(showCompleted) h += `<div class="list" style="margin-top:8px">${done.sort(sortFn).map(item).join("")}</div>`;
+    h += `<button class="btn block" style="margin-top:14px" data-act="toggle-completed">${showCompleted[mod]?"Hide":"Show"} completed projects (${done.length})</button>`;
+    if(showCompleted[mod]) h += `<div class="list" style="margin-top:8px">${done.sort(sortFn).map(item).join("")}</div>`;
   }
+  // When searching, also offer matching projects that so far belong only to other tools.
+  if(q){ const other = [...projects.values()].filter(p => !inMod(p,mod) && match(p));
+    if(other.length) h += `<h2>Other projects</h2><p class="muted small" style="margin:0 2px 8px">Set up in another tool. Open one to add ${mod==="drit"?"DRIT tests":"gas visits"}.</p><div class="list">${other.sort(sortFn).map(item).join("")}</div>`; }
   return h;
 }
-function renderNewProject(){
-  cur={kind:"newproj"};
-  bar("New project", "#/");
+function renderNewProject(mod){
+  mod = MODS[mod] ? mod : "gas";
+  cur={kind:"newproj", mod};
+  bar("New project", MODS[mod].home, mod);
   $("#app").innerHTML = `<div class="panel"><div class="grid">
     <div class="field wide"><label for="np_no">Full project number</label><input type="text" id="np_no" autocomplete="off" autocapitalize="characters" autocorrect="off" spellcheck="false" placeholder="e.g. 10171,GI or 11031,GI,SK">
-      <p class="muted small" style="margin:4px 0 0">4 or 5 digits, then one or more codes separated by commas.</p><p class="warn" id="np_err"></p></div>
+      <p class="muted small" style="margin:4px 0 0">4 or 5 digits, then one or more codes separated by commas. If the project already exists in another tool, it opens that one.</p><p class="warn" id="np_err"></p></div>
     <div class="field wide"><label for="np_site">Site name</label><input type="text" id="np_site" autocomplete="off"></div>
-    <div class="field wide"><label for="np_locs">Monitoring locations <span class="unit">optional, can add later</span></label><input type="text" id="np_locs" autocomplete="off" autocapitalize="characters" placeholder="e.g. WS01, WS04, BH2"></div>
-    <div class="field wide"><button class="btn primary block" data-act="create-project">Create project</button></div></div></div>`;
+    ${mod==="gas"?`<div class="field wide"><label for="np_locs">Monitoring locations <span class="unit">optional, can add later</span></label><input type="text" id="np_locs" autocomplete="off" autocapitalize="characters" placeholder="e.g. WS01, WS04, BH2"></div>
+    <div class="field wide"><label for="np_planned">Visits scheduled <span class="unit">optional, as quoted</span></label><input type="text" id="np_planned" inputmode="numeric" autocomplete="off" placeholder="e.g. 6"></div>`:""}
+    <div class="field wide"><button class="btn primary block" data-act="create-project">Create project</button></div></div></div>
+    <p class="muted small" style="margin-top:10px">Hole plan and MyMaps links can be added from Edit project.</p>`;
 }
 function createProject(){
+  const mod = cur.mod || "gas";
   const full = normProject($("#np_no").value), m = full.match(PROJECT_RE), err=$("#np_err");
   if(!m){ err.textContent = "Doesn't match the format, e.g. 10171,GI"; return; }
   const n = m[1];
-  if(projects.has(n)){ const p=projects.get(n); toast(`Project ${n} already exists as ${p.fullNo}. Opening it.`, 4000); location.hash=`#/p/${n}`; return; }
-  const locs = {}; parseNames($("#np_locs").value).forEach((name,i)=>{ locs[uid()] = {name, order:i}; });
-  createDoc("projects", n, {fullNo:full, site:$("#np_site").value.trim(), locations:locs, gasCompleted:false});
-  location.hash = `#/p/${n}`;
+  if(projects.has(n)){ const p=projects.get(n); markMod(p, mod); flush(); toast(`Project ${n} already exists as ${p.fullNo}. Opening it.`, 4000); location.hash=MODS[mod].proj(n); return; }
+  const locs = {}; if($("#np_locs")) parseNames($("#np_locs").value).forEach((name,i)=>{ locs[uid()] = {name, order:i}; });
+  const planned = $("#np_planned") ? String(parseInt($("#np_planned").value,10)||"") : "";
+  createDoc("projects", n, {fullNo:full, site:$("#np_site").value.trim(), locations:locs, gasCompleted:false, modules:{[mod]:true}, ...(planned?{gasVisitsPlanned:planned}:{})});
+  location.hash = MODS[mod].proj(n);
 }
 function parseNames(s){ const seen=new Set(), out=[]; String(s||"").split(/[,;\n]+/).map(x=>x.trim().toUpperCase()).filter(Boolean).forEach(x=>{ if(!seen.has(x)){ seen.add(x); out.push(x); } }); return out; }
 function addLocationsTo(p, names){
@@ -642,45 +722,93 @@ function addLocationsTo(p, names){
   flush();
   if(skipped.length) toast(`Already in this project: ${skipped.join(", ")}`); else if(added.length) toast(`Added ${added.length} location${added.length===1?"":"s"}`);
 }
+// Project summary shared by every tool: number, site, status, Edit project, then any site links.
+function projSummaryHTML(p, mod, extraRows){
+  const hp = safeUrl(p.holePlanUrl), mm = safeUrl(p.myMapsUrl);
+  const status = mod==="drit" ? (dritDone(p)?"DRIT tests completed":"Ongoing") : (gasDone(p)?"Gas monitoring completed":"Ongoing");
+  return `<div class="panel summary"><dl><dt>Project</dt><dd>${esc(p.fullNo)}</dd><dt>Site</dt><dd>${esc(p.site||"–")}</dd>${extraRows||""}<dt>Status</dt><dd>${status}</dd></dl>
+    <a class="btn block" href="${mod==="drit"?`#/dp/${p.id}/edit`:`#/p/${p.id}/edit`}">Edit project</a>
+    ${hp||mm?`<div class="links">${hp?`<a class="btn hv block" href="${esc(hp)}" target="_blank" rel="noopener">Open hole plan</a>`:""}${mm?`<a class="btn hv block" href="${esc(mm)}" target="_blank" rel="noopener">Open MyMaps</a>`:""}</div>`:""}</div>`;
+}
+function switchHTML(p, to){
+  if(!dritOn()) return "";
+  return `<a class="switch" href="${MODS[to].proj(p.id)}">${ICONS[to].replace('aria-hidden="true"','aria-hidden="true" width="28" height="28" style="color:var(--hv-text)"')}<span>${to==="drit"?"DRIT tests":"Gas monitoring"} for this project</span><span class="chev" style="flex:0">›</span></a>`;
+}
+function visitTag(v, p){
+  const pl = plannedVisits(p), n = visitOrdinal(v);
+  if(pl && n>=1 && n<=pl) return `<span class="tag">${n}/${pl}</span>`;
+  return `<span class="tag${pl?" fresh":""}">${esc(v.visitNo||"?")}</span>`;
+}
 function renderProject(p){
-  cur={kind:"project", projNum:p.id};
-  bar(p.fullNo, "#/");
-  const vs = projVisits(p.id), locs = projLocs(p);
-  let h = `<div class="panel summary"><dl><dt>Project</dt><dd>${esc(p.fullNo)}</dd><dt>Site</dt><dd>${esc(p.site||"–")}</dd><dt>Status</dt><dd>${gasDone(p)?"Gas monitoring completed":"Ongoing"}</dd></dl>
-    <a class="btn block" href="#/p/${p.id}/edit">Edit project</a></div>`;
+  cur={kind:"project", projNum:p.id, mod:"gas"};
+  setLastMod("gas");
+  bar(p.fullNo, "#/gas", "gas");
+  const vs = projVisits(p.id), locs = projLocs(p), pl = plannedVisits(p);
+  const sched = `<dt>Visits</dt><dd>${pl?`${vs.length} of ${pl} scheduled${vs.length>pl?` (+${vs.length-pl} additional)`:""}`:`${vs.length} <span class="muted" style="font-weight:500">· scheduled not set</span>`}</dd>`;
+  let h = projSummaryHTML(p, "gas", sched);
   h += `<h2>Visits</h2>`;
   h += vs.length ? `<div class="list">${vs.map(v=>{
-      const done = locs.filter(l=>locStatus(reading(v,l.id)).n===LOC_FIELDS.length).length;
-      return `<a class="item" href="#/v/${v.id}"><span class="tag">${esc(v.visitNo||"?")}</span><div class="main"><div class="title">${esc(fmtDate(v.datetime))}</div>
-        <div class="sub">${esc(v.by||"–")} · ${done} of ${locs.length} locations complete</div></div><span class="chev">›</span></a>`; }).join("")}</div>`
+      const done = locs.filter(l=>locStatus(reading(v,l.id)).n===LOC_FIELDS.length).length, n = visitOrdinal(v), extra = pl && n>pl;
+      return `<a class="item" href="#/v/${v.id}">${visitTag(v,p)}<div class="main"><div class="title">${esc(fmtDate(v.datetime))}</div>
+        <div class="sub">${extra?`Additional visit${v.visitNo?` (${esc(v.visitNo)})`:""} · `:pl&&v.visitNo?`${esc(v.visitNo)} visit · `:""}${esc(v.by||"–")} · ${done} of ${locs.length} locations complete</div></div><span class="chev">›</span></a>`; }).join("")}</div>`
     : `<div class="panel empty"><p class="muted">No visits yet.</p></div>`;
-  h += `<div style="margin-top:12px"><button class="btn primary block" data-act="new-visit">Start ${esc(suggestVisitNo(p.id)||"a new")} visit</button></div>`;
-  if(dritOn()) h += projectDritsHTML(p);
+  const nextNo = suggestVisitNo(p.id), nextN = (VISIT_NOS.indexOf(nextNo)+1) || vs.length+1;
+  const startLabel = pl ? (nextN<=pl ? `Start ${nextNo||"next"} visit (${nextN}/${pl})` : `Start additional visit${nextNo?` (${nextNo})`:""}`) : `Start ${nextNo||"a new"} visit`;
+  h += `<div style="margin-top:12px"><button class="btn primary block" data-act="new-visit">${esc(startLabel)}</button>
+    ${pl && nextN>pl ? `<p class="muted small" style="margin:6px 2px 0">All ${pl} scheduled visit${pl===1?" is":"s are"} done. You can still add more.</p>` : ""}</div>`;
   h += `<h2>Monitoring locations</h2><div class="panel"><p class="small">${locs.length ? locs.map(l=>`<span class="tag" style="margin:0 6px 6px 0">${esc(l.name)}</span>`).join("") : `<span class="muted">None yet.</span>`}</p>
     <div class="addrow"><input type="text" id="addLoc" placeholder="e.g. WS01, WS04, BH2" autocapitalize="characters" autocomplete="off" aria-label="Location names" enterkeyhint="done"><button class="btn hv" data-act="add-loc">Add</button></div>
     <p class="muted small" style="margin:6px 0 0">Locations are shared by every visit to this project. Rename or remove one from its reading page.</p></div>`;
   h += `<h2>Completed spreadsheet (GGT012)</h2><div class="panel"><p class="small"><strong>Download completed Gas Monitoring spreadsheet with all data</strong></p>
     <p class="muted small">One tab per location, with graphs. Project name and date of installation are left to complete by hand.${locs.length>10?` This project has ${locs.length} locations, so it comes as ${Math.ceil(locs.length/10)} files of up to 10 tabs.`:""}</p>${emailBlock("export-ggt")}
     <button class="btn block" style="margin-top:10px" data-act="export-project" data-mode="download">Download all raw data</button></div>`;
+  h += switchHTML(p, "drit");
   $("#app").innerHTML = h;
   bindAddLoc(()=>p); bindEmailTo();
 }
-function renderProjectEdit(p){
-  cur={kind:"projedit", projNum:p.id};
-  bar("Edit project", `#/p/${p.id}`);
+function renderDritProject(p){
+  cur={kind:"dproject", projNum:p.id, mod:"drit"};
+  setLastMod("drit");
+  bar(p.fullNo, "#/drit", "drit");
+  let h = projSummaryHTML(p, "drit");
+  h += projectDritsHTML(p);
+  h += switchHTML(p, "gas");
+  $("#app").innerHTML = h;
+}
+function renderProjectEdit(p, mod){
+  mod = mod || "gas";
+  cur={kind:"projedit", projNum:p.id, mod};
+  bar("Edit project", MODS[mod].proj(p.id), mod);
+  const done = modDone(p, mod), what = mod==="drit" ? "DRIT tests" : "gas monitoring", What = mod==="drit" ? "DRIT tests" : "Gas monitoring";
+  const urlField = (k, label, ph) => `<div class="field wide"><label for="f_${k}">${label} <span class="unit">optional</span></label><input type="text" id="f_${k}" data-k="${k}" value="${esc(p[k])}" inputmode="url" autocapitalize="none" autocomplete="off" autocorrect="off" spellcheck="false" placeholder="${ph}"><p class="warn" id="w_${k}"></p></div>`;
   $("#app").innerHTML = `<div class="panel"><div class="grid">
     <div class="field wide"><label for="pe_no">Full project number</label><input type="text" id="pe_no" value="${esc(p.fullNo)}" autocapitalize="characters" autocomplete="off" autocorrect="off" spellcheck="false">
       <p class="muted small" style="margin:4px 0 0">You can change the letter codes. The number ${esc(p.id)} can't change; to file a visit under a different number, move the visit instead.</p><p class="warn" id="pe_err"></p></div>
     <div class="field wide"><label for="f_site">Site name</label><input type="text" id="f_site" data-k="site" value="${esc(p.site)}" autocomplete="off"></div>
   </div></div>
-  <h2>Status</h2><div class="panel"><p class="small">${gasDone(p)?"Gas monitoring on this project is marked completed and hidden from the ongoing list. Nothing has been deleted.":"Mark gas monitoring completed to hide the project from the ongoing list. Nothing is deleted and it can be reopened. Other tools are not affected."}</p>
-    <button class="btn ${gasDone(p)?"":"primary"} block" data-act="toggle-project-done">${gasDone(p)?"Reopen gas monitoring":"Mark gas monitoring completed"}</button></div>`;
+  <h2>Site links</h2><div class="panel"><div class="grid">
+    ${urlField("holePlanUrl","Hole plan link","Paste the Egnyte link")}
+    ${urlField("myMapsUrl","MyMaps link","Paste the Google MyMaps link")}
+    <p class="muted small wide" style="grid-column:1/-1;margin:0">Shared by every tool. Buttons to open them appear under Edit project. They need signal to open.</p>
+  </div></div>
+  ${mod==="gas"?`<h2>Gas monitoring</h2><div class="panel"><div class="grid">
+    <div class="field wide"><label for="f_gasVisitsPlanned">Visits scheduled <span class="unit">as quoted</span></label><input type="text" id="f_gasVisitsPlanned" data-k="gasVisitsPlanned" value="${esc(p.gasVisitsPlanned)}" inputmode="numeric" autocomplete="off" placeholder="e.g. 6">
+      <p class="muted small" style="margin:4px 0 0">A guide only: visits show as 1/6, 2/6 and so on. Extra visits can still be added.</p><p class="warn" id="w_gasVisitsPlanned"></p></div>
+  </div></div>`:""}
+  <h2>Status</h2><div class="panel"><p class="small">${done?`${What} on this project ${mod==="drit"?"are":"is"} marked completed and hidden from the ongoing list. Nothing has been deleted.`:`Mark ${what} completed to hide the project from the ongoing list. Nothing is deleted and it can be reopened. Other tools are not affected.`}</p>
+    <button class="btn ${done?"":"primary"} block" data-act="toggle-project-done">${done?`Reopen ${what}`:`Mark ${what} completed`}</button></div>`;
+  paintProjWarnings();
   $("#pe_no").addEventListener("change", e=>{
     const full=normProject(e.target.value), m=full.match(PROJECT_RE), err=$("#pe_err");
     if(!m){ err.textContent="Doesn't match the format, e.g. 10171,GI"; return; }
     if(m[1]!==p.id){ err.textContent=`The number must stay ${p.id}.`; return; }
     err.textContent=""; e.target.value=full; applyEdit("fullNo", full); flush(); toast("Project number updated");
   });
+}
+function paintProjWarnings(){
+  if(cur.kind!=="projedit") return; const p = curProject(); if(!p) return;
+  for(const k of ["holePlanUrl","myMapsUrl"]){ const w=$("#w_"+k); if(w) w.textContent = filled(p[k]) && !safeUrl(p[k]) ? "That doesn't look like a web link." : ""; }
+  const w=$("#w_gasVisitsPlanned"); if(w) w.textContent = filled(p.gasVisitsPlanned) && !plannedVisits(p) ? "Enter a whole number, e.g. 6." : "";
 }
 
 /* ---------- Screens: visits ---------- */
@@ -695,7 +823,7 @@ function newVisit(p){
 function renderVisit(v){
   const p = projects.get(v.projectNum);
   cur={kind:"visit", visitId:v.id, projNum:v.projectNum};
-  bar(visitTitle(v), `#/p/${v.projectNum}`);
+  bar(visitTitle(v), `#/p/${v.projectNum}`, "gas");
   if(!p){ $("#app").innerHTML=`<div class="panel"><p>This visit's project (${esc(v.projectNum)}) hasn't synced to this phone yet.</p></div>`; return; }
   const weather = WEATHER.map(w=>v[w.k]).filter(filled).join(", ");
   const inst = v.instrument==="Other" ? (v.instrumentOther||"Other") : v.instrument;
@@ -724,7 +852,7 @@ function renderVisit(v){
 }
 function renderDetails(v){
   cur={kind:"details", visitId:v.id, projNum:v.projectNum};
-  bar("Visit details", `#/v/${v.id}`);
+  bar("Visit details", `#/v/${v.id}`, "gas");
   const p = projects.get(v.projectNum);
   const dup = projVisits(v.projectNum).filter(x=>x.id!==v.id && x.visitNo && x.visitNo===v.visitNo).length;
   const t = (k,label,attrs="") => `<div class="field wide"><label for="f_${k}">${label}</label><input id="f_${k}" data-k="${k}" type="text" value="${esc(v[k])}" ${attrs}></div>`;
@@ -734,7 +862,7 @@ function renderDetails(v){
       <div id="moveBox" hidden style="margin-top:8px"><div class="addrow"><input type="text" id="mv_no" placeholder="e.g. 10172,GI" autocapitalize="characters" autocomplete="off" autocorrect="off" spellcheck="false" aria-label="Project to move to"><button class="btn hv" data-act="do-move">Move</button></div><p class="warn" id="mv_err"></p></div></div>
     <div class="field wide"><label for="f_datetime">Date and time of monitoring</label><input id="f_datetime" data-k="datetime" type="datetime-local" value="${esc(v.datetime)}"></div>
     ${t("by","Fieldwork by",'autocomplete="name"')}
-    <div class="field wide"><label>Visit number</label>${segHTML("visitNo",VISIT_NOS,v.visitNo)}<p class="warn" id="w_visitNo">${dup?`Another visit on this project is also marked ${esc(v.visitNo)}.`:""}</p></div>
+    <div class="field wide"><label>Visit number${plannedVisits(p)?` <span class="unit">${plannedVisits(p)} scheduled</span>`:""}</label>${segHTML("visitNo",VISIT_NOS,v.visitNo)}<p class="warn" id="w_visitNo">${dup?`Another visit on this project is also marked ${esc(v.visitNo)}.`:""}</p></div>
     <div class="field wide"><label>Atmospheric pressure during monitoring</label>${segHTML("pressureTrend",TRENDS,v.pressureTrend||"Steady")}</div>
     <div class="field wide"><label>Instrument</label>${segHTML("instrument",INSTRUMENTS,v.instrument)}</div>
     <div class="field wide" id="instOther" ${v.instrument==="Other"?"":"hidden"}><label for="f_instrumentOther">Other instrument</label><input id="f_instrumentOther" data-k="instrumentOther" type="text" value="${esc(v.instrumentOther)}"></div>
@@ -755,7 +883,7 @@ function moveVisit(v){
   const to=m[1]; if(to===v.projectNum){ err.textContent="It's already in that project."; return; }
   const from=projects.get(v.projectNum);
   let target=projects.get(to);
-  if(!target) target=createDoc("projects", to, {fullNo:full, site:from?from.site:"", locations:{}, gasCompleted:false});
+  if(!target) target=createDoc("projects", to, {fullNo:full, site:from?from.site:"", locations:{}, gasCompleted:false, modules:{gas:true}});
   // Match locations by name, adding any the target project doesn't have.
   const byName = {}; projLocs(target).forEach(l=>byName[l.name.toUpperCase()]=l.id);
   const readings = {};
@@ -770,7 +898,7 @@ function moveVisit(v){
 }
 function renderFresh(v){
   cur={kind:"fresh", visitId:v.id, projNum:v.projectNum};
-  bar("Fresh air", `#/v/${v.id}`);
+  bar("Fresh air", `#/v/${v.id}`, "gas");
   $("#app").innerHTML = `<p class="muted small">Background readings taken in open air before monitoring.</p><div class="panel"><div class="grid">${FRESH_FIELDS.map(f=>fieldHTML(f,v.freshAir||{})).join("")}</div></div>
     <div style="margin-top:14px"><a class="btn block" href="#/v/${v.id}">Done</a></div>`;
   paintWarnings();
@@ -778,7 +906,7 @@ function renderFresh(v){
 function renderLoc(v, locId){
   const p = projects.get(v.projectNum), l = p.locations[locId];
   cur={kind:"loc", visitId:v.id, projNum:v.projectNum, locId};
-  bar(l.name, `#/v/${v.id}`);
+  bar(l.name, `#/v/${v.id}`, "gas");
   const locs = projLocs(p), i = locs.findIndex(x=>x.id===locId), prev=locs[i-1], next=locs[i+1];
   const r = reading(v, locId), skipped = r.status && r.status!=="Monitored";
   let h = `<div class="panel"><div class="grid">
@@ -833,7 +961,7 @@ function legacyVisits(){
 }
 function renderImport(){
   cur={kind:"import"};
-  bar("Previous version", "#/");
+  bar("Previous version", "#/gas", "gas");
   const list = legacyVisits();
   if(!list.length){ $("#app").innerHTML=`<div class="panel empty"><p>All visits have been filed.</p></div>`; return; }
   $("#app").innerHTML = `<p class="small">These were entered before projects existed and are only on this phone. Enter the full project number for each to file it and sync it. The original stays on this phone as a backup.</p>
@@ -848,7 +976,7 @@ function renderRestore(){
   if(!lost.projects.length && !lost.visits.length && !lost.drits.length){ $("#app").innerHTML=`<div class="panel empty"><p>Everything saved on this phone is in the database.</p></div>`; return; }
   const pName = n => (projects.get(n)||backup.projects[n]||{}).fullNo || n;
   $("#app").innerHTML = `<p class="small">These were saved on this phone but aren't in the database. That usually means the database refused them, for example while access wasn't set up. If someone deleted a visit on another phone, it can also show here.</p>
-    <div class="panel"><ul style="margin:0;padding-left:20px">${lost.projects.map(b=>`<li>Project ${esc(b.fullNo)} ${esc(b.site||"")}</li>`).join("")}${lost.visits.map(b=>`<li>${esc(pName(b.projectNum))} · ${esc(b.visitNo||"?")} visit · ${esc(fmtDate(b.datetime))}</li>`).join("")}${lost.drits.map(b=>`<li>${esc(pName(b.projectNum))} · infiltration test ${esc(b.location||"")} · ${esc(fmtDate(b.date,false))}</li>`).join("")}</ul></div>
+    <div class="panel"><ul style="margin:0;padding-left:20px">${lost.projects.map(b=>`<li>Project ${esc(b.fullNo)} ${esc(b.site||"")}</li>`).join("")}${lost.visits.map(b=>`<li>${esc(pName(b.projectNum))} · ${esc(b.visitNo||"?")} visit · ${esc(fmtDate(b.datetime))}</li>`).join("")}${lost.drits.map(b=>`<li>${esc(pName(b.projectNum))} · DRIT test ${esc(b.location||"")} · ${esc(fmtDate(b.date,false))}</li>`).join("")}</ul></div>
     <div class="row" style="margin-top:14px"><button class="btn primary" data-act="do-restore">Restore to database</button><button class="btn" data-act="forget-lost">Clear this list</button></div>`;
 }
 function restoreLost(){
@@ -866,7 +994,7 @@ function importLegacy(id){
   const old = legacyVisits().find(v=>v.id===id); if(!old) return;
   const full=normProject($("#imp_"+id).value), m=full.match(PROJECT_RE);
   if(!m){ $("#imperr_"+id).textContent="Doesn't match the format, e.g. 10171,GI"; return; }
-  let p = projects.get(m[1]) || createDoc("projects", m[1], {fullNo:full, site:old.site||"", locations:{}, gasCompleted:false});
+  let p = projects.get(m[1]) || createDoc("projects", m[1], {fullNo:full, site:old.site||"", locations:{}, gasCompleted:false, modules:{gas:true}});
   const names = (old.locations||[]).map(l=>String(l.name).trim().toUpperCase()).filter(Boolean);
   addLocationsTo(p, names);
   const byName={}; projLocs(p).forEach(l=>byName[l.name.toUpperCase()]=l.id);
@@ -1046,7 +1174,7 @@ function exportProject(p, mode){
     [`Compiled gas monitoring results attached: ${name}`, "", `Project: ${p.fullNo}`, `Site: ${p.site||"–"}`, `Visits: ${vs.map(v=>`${v.visitNo||"?"} (${fmtDate(v.datetime,false)})`).join(", ")||"–"}`, `Locations: ${projLocs(p).map(l=>l.name).join(", ")||"–"}`]);
 }
 
-/* ---------- Infiltration tests (DRIT) ---------- */
+/* ---------- DRIT tests ---------- */
 // One test per page. Each run: filled (start time, level after filling), then read before refilling
 // (end time, level before refill). Levels in cm to 1 decimal place, measured down from the reference.
 let dritFocus = "", dritSigShown = "", dritTemplateBuf = null;
@@ -1070,7 +1198,7 @@ function fmtMins(m){ m=Math.round(m); return m>=60 ? `${Math.floor(m/60)} h ${m%
 function fmtSci(v){ if(v===null||!isFinite(v)) return "–"; const [a,b]=v.toExponential(2).split("e"); const e=parseInt(b,10); return `${a}E${e<0?"-":"+"}${pad2(Math.abs(e))}`; }
 function dritCompleted(d){ return runList(d).filter(runComplete).map(r=>({start:minsOf(r.start), end:minsOf(r.end), after:parseFloat(r.after), before:parseFloat(r.before), id:r.id, n:r.n})); }
 function dritSig(d){ return JSON.stringify([runList(d).map(r=>r.id+(filled(r.end)?"e":"")), !!d.finished]); }
-function dritTitle(d){ return d.location || "Infiltration test"; }
+function dritTitle(d){ return d.location || "DRIT test"; }
 
 function runWarn(r){
   const w = [];
@@ -1090,28 +1218,29 @@ function runWarn(r){
 function runningListHTML(){
   const list = [...drits.values()].filter(isRunning).sort((a,b)=>(a.created||0)-(b.created||0));
   if(!list.length) return "";
-  return `<h2>Infiltration tests running</h2><div class="list">${list.map(d=>{
+  return `<h2>DRIT tests running</h2><div class="list">${list.map(d=>{
     const p = projects.get(d.projectNum), {rs,last,open} = dritState(d);
     const since = last ? timeMs(d, last, open ? "start" : "end") : null;
     return `<a class="item" href="#/d/${d.id}"><span class="tag">${esc(dritTitle(d))}</span><div class="main"><div class="title">${esc(p?p.fullNo:d.projectNum)}</div>
-      <div class="sub">${open?`Run ${rs.length} running`:`Run ${rs.length} read, refill due`}${since?` · <span data-since="${since}">${fmtElapsed(Date.now()-since)}</span>`:""}</div></div><span class="chev">›</span></a>`;
+      <div class="sub">${open?`Fill ${rs.length} running`:`Fill ${rs.length} read, refill due`}${since?` · <span data-since="${since}">${fmtElapsed(Date.now()-since)}</span>`:""}</div></div><span class="chev">›</span></a>`;
   }).join("")}</div>`;
 }
 function projectDritsHTML(p){
   const ds = projDrits(p.id);
-  let h = `<h2>Infiltration tests (DRIT)</h2>`;
+  let h = `<h2>Tests</h2>`;
   if(dritError) h += `<p class="notice err-notice">${esc(dritError)}</p>`;
   h += ds.length ? `<div class="list">${ds.map(d=>{
       const done = dritCompleted(d), c = done.length ? dritCalc(done) : null;
       const status = isRunning(d) ? "Running" : d.finished ? "Finished" : "Not finished";
       return `<a class="item" href="#/d/${d.id}"><span class="tag">${esc(dritTitle(d))}</span><div class="main"><div class="title">${esc(fmtDate(d.date,false))}</div>
-        <div class="sub">${status} · ${done.length} run${done.length===1?"":"s"}${c&&c.avgRate!==null?` · ${c.avgRate.toFixed(2)} mm/min`:""}</div></div><span class="chev">›</span></a>`; }).join("")}</div>`
-    : `<div class="panel empty"><p class="muted">No infiltration tests yet.</p></div>`;
-  h += `<div style="margin-top:12px"><button class="btn primary block" data-act="new-drit">New infiltration test</button></div>`;
+        <div class="sub">${status} · ${done.length} fill${done.length===1?"":"s"}${c&&c.avgRate!==null?` · ${c.avgRate.toFixed(2)} mm/min`:""}</div></div><span class="chev">›</span></a>`; }).join("")}</div>`
+    : `<div class="panel empty"><p class="muted">No DRIT tests yet.</p></div>`;
+  h += `<div style="margin-top:12px"><button class="btn primary block" data-act="new-drit">New DRIT test</button></div>`;
   return h;
 }
 function newDrit(p){
   if(!p) return;
+  markMod(p, "drit");
   const id = uid();
   createDoc("drits", id, {projectNum:p.id, location:"", date:todayStr(), by:initials(user.displayName), w3w:"", gridRef:"", gps:null,
     runs:{}, finished:false, created:Date.now(), deleted:false});
@@ -1123,64 +1252,64 @@ function stripHTML(d){
   const others = [...drits.values()].filter(x=>x.id!==d.id && isRunning(x));
   if(!others.length) return "";
   return `<div class="strip" aria-label="Other tests running">${others.map(x=>{ const {rs,last,open}=dritState(x); const since=last?timeMs(x,last,open?"start":"end"):null;
-    return `<a href="#/d/${x.id}"><span class="tag">${esc(dritTitle(x))}</span><span>${open?`Run ${rs.length}`:"Refill"}${since?` · <span data-since="${since}">${fmtElapsed(Date.now()-since)}</span>`:""}</span></a>`; }).join("")}</div>`;
+    return `<a href="#/d/${x.id}"><span class="tag">${esc(dritTitle(x))}</span><span>${open?`Fill ${rs.length}`:"Refill"}${since?` · <span data-since="${since}">${fmtElapsed(Date.now()-since)}</span>`:""}</span></a>`; }).join("")}</div>`;
 }
 function ctrlHTML(d){
   const {rs, last, open} = dritState(d), first = rs[0], t0 = first ? timeMs(d, first, "start") : null;
   const today = d.date===todayStr();
   const total = t0 && today && !d.finished ? `<p class="small" style="margin:0 0 10px">Test time <b data-since="${t0}">${fmtElapsed(Date.now()-t0)}</b> <span class="muted">of about 2 hours</span></p>` : "";
-  if(d.finished) return `<p class="lbl">Test finished</p><p class="small" style="margin:4px 0 10px">${rs.filter(runComplete).length} completed runs. Reopen to add or change runs.</p>
+  if(d.finished) return `<p class="lbl">Test finished</p><p class="small" style="margin:4px 0 10px">${rs.filter(runComplete).length} completed fills. Reopen to add or change fills.</p>
     <button class="btn block" data-act="drit-reopen">Reopen test</button>`;
   if(!rs.length) return `<p class="lbl">Ready</p><p style="margin:4px 0 12px">Fill the inner ring, then tap Start. The time is recorded now and you can change it afterwards.</p>
-    <button class="btn hv block" data-act="drit-start">Filled — start run 1</button>`;
+    <button class="btn hv block" data-act="drit-start">Filled — start fill 1</button>`;
   if(open){
     const since = timeMs(d, last, "start");
     // Estimate when this run will have dropped about 10 cm, from the last completed run's rate.
     const prev = rs.slice(0,-1).reverse().find(runComplete), rate = prev ? runRate(prev) : null;
     let est = "";
-    if(rate && rate>0 && since){ const at = new Date(since + 100/rate*60000); est = `<p class="small muted" style="margin:0 0 10px">At run ${prev.n}'s rate, about 10 cm will have gone by <b>${hhmm(at)}</b>.</p>`; }
-    return `<p class="lbl">Run ${rs.length} running${filled(last.after)?"":" · enter the level after filling"}</p>
+    if(rate && rate>0 && since){ const at = new Date(since + 100/rate*60000); est = `<p class="small muted" style="margin:0 0 10px">At fill ${prev.n}'s rate, about 10 cm will have gone by <b>${hhmm(at)}</b>.</p>`; }
+    return `<p class="lbl">Fill ${rs.length} running${filled(last.after)?"":" · enter the level after filling"}</p>
       <div class="timer">${since && today ? `<span data-since="${since}">${fmtElapsed(Date.now()-since)}</span>` : esc(last.start||"–")}</div>${est}${total}
-      <button class="btn hv block" data-act="drit-end">Read level now — end run ${rs.length}</button>`;
+      <button class="btn hv block" data-act="drit-end">Read level now — end fill ${rs.length}</button>`;
   }
   const since = timeMs(d, last, "end");
-  return `<p class="lbl">Run ${rs.length} read${isNum(last.before)?"":" · enter the level before refill"}</p>
+  return `<p class="lbl">Fill ${rs.length} read${isNum(last.before)?"":" · enter the level before refill"}</p>
     <div class="timer">${since && today ? `<span data-since="${since}">${fmtElapsed(Date.now()-since)}</span>` : esc(last.end||"–")}</div>${total}
-    <div class="row"><button class="btn hv" data-act="drit-start">Refilled — start run ${rs.length+1}</button><button class="btn" data-act="drit-finish">Finish test</button></div>`;
+    <div class="row"><button class="btn hv" data-act="drit-start">Refilled — start fill ${rs.length+1}</button><button class="btn" data-act="drit-finish">Finish test</button></div>`;
 }
 function runCalcHTML(d, r, prevDone){
   if(!runComplete(r)) return filled(r.end) ? "" : `<span class="muted">Running</span>`;
   const m = runMins(r), inf = (parseFloat(r.before)-parseFloat(r.after))*10, rate = runRate(r), pr = prevDone ? runRate(prevDone) : null;
   const ch = rate!==null && pr ? Math.round((rate-pr)/pr*100) : null;
-  return `${fmtMins(m)} · ${Math.round(inf*10)/10} mm · <b>${rate!==null?rate.toFixed(2):"–"} mm/min</b>${ch!==null?` · ${ch>0?"+":""}${ch}% on run ${prevDone.n}`:""}`;
+  return `${fmtMins(m)} · ${Math.round(inf*10)/10} mm · <b>${rate!==null?rate.toFixed(2):"–"} mm/min</b>${ch!==null?` · ${ch>0?"+":""}${ch}% on fill ${prevDone.n}`:""}`;
 }
 function runCardHTML(d, r, isLast, isOpen){
   const k = f => `runs.${r.id}.${f}`;
   const fld = (f, label, unit, type) => `<div class="field"><label for="r_${r.id}_${f}">${label}${unit?` <span class="unit">${unit}</span>`:""}</label>
     <input id="r_${r.id}_${f}" data-k="${k(f)}" type="${type}" ${type==="text"?'inputmode="decimal" autocomplete="off" autocorrect="off" spellcheck="false" enterkeyhint="next"':""} value="${esc(r[f])}"></div>`;
-  return `<div class="runcard${isOpen?" open":""}" id="run_${r.id}"><div class="runhead"><b>Run ${r.n}</b>${isLast&&!d.finished?`<span style="flex:1"></span><button class="linkbtn small" data-act="drit-remove-run" data-run="${r.id}">Remove run</button>`:""}</div>
+  return `<div class="runcard${isOpen?" open":""}" id="run_${r.id}"><div class="runhead"><b>Fill ${r.n}</b>${isLast&&!d.finished?`<span style="flex:1"></span><button class="linkbtn small" data-act="drit-remove-run" data-run="${r.id}">Remove fill</button>`:""}</div>
     <div class="grid">${fld("start","Start","filled","time")}${fld("after","Level after filling","cm","text")}${fld("end","End","read","time")}${fld("before","Level before refill","cm","text")}</div>
     <p class="calc" id="rc_${r.id}"></p><p class="warn" id="rw_${r.id}"></p></div>`;
 }
 function sumHTML(d){
   const rs = runList(d), done = dritCompleted(d), skipped = rs.filter((r,i)=>!runComplete(r) && (d.finished || i<rs.length-1));
   let h = "";
-  if(!done.length) h += `<p class="muted small" style="margin:0">Results appear here once a run is complete.</p>`;
+  if(!done.length) h += `<p class="muted small" style="margin:0">Results appear here once a fill is complete.</p>`;
   else {
     const c = dritCalc(done), a = done[c.from].n, b = done[done.length-1].n;
-    h += `<div class="summary"><dl><dt>Completed runs</dt><dd>${done.length}</dd><dt>Test length</dt><dd>${fmtMins(c.totalMin)}</dd>
-      <dt>Averaged</dt><dd>${c.take>1?`Runs ${a}–${b}`:`Run ${a}`} <span class="muted">(${done.length>=5?"last 4":c.take>1?"last 2":"only run"})</span></dd>
+    h += `<div class="summary"><dl><dt>Completed fills</dt><dd>${done.length}</dd><dt>Test length</dt><dd>${fmtMins(c.totalMin)}</dd>
+      <dt>Averaged</dt><dd>${c.take>1?`Fills ${a}–${b}`:`Fill ${a}`} <span class="muted">(${done.length>=5?"last 4":c.take>1?"last 2":"only fill"})</span></dd>
       <dt>Average</dt><dd>${c.avgRate!==null?c.avgRate.toFixed(2):"–"} mm/min · ${fmtSci(c.avgMs)} m/s</dd></dl></div>`;
     if(c.totalMin < 110) h += `<p class="muted small" style="margin:0">Tests usually run for about 2 hours.</p>`;
   }
-  if(done.length > DRIT_TEMPLATE_RUNS) h += `<p class="warn">More than ${DRIT_TEMPLATE_RUNS} runs – check output spreadsheet.</p>`;
-  if(skipped.length) h += `<p class="warn">${skipped.map(r=>"Run "+r.n).join(", ")} ${skipped.length===1?"isn't":"aren't"} complete, so will be left out of the spreadsheet.</p>`;
+  if(done.length > DRIT_TEMPLATE_RUNS) h += `<p class="warn">More than ${DRIT_TEMPLATE_RUNS} fills – check output spreadsheet.</p>`;
+  if(skipped.length) h += `<p class="warn">${skipped.map(r=>"Fill "+r.n).join(", ")} ${skipped.length===1?"isn't":"aren't"} complete, so will be left out of the spreadsheet.</p>`;
   return h;
 }
 function renderDrit(d){
   cur = {kind:"drit", dritId:d.id, projNum:d.projectNum};
   const p = projects.get(d.projectNum);
-  bar(dritTitle(d), `#/p/${d.projectNum}`);
+  bar(dritTitle(d), `#/dp/${d.projectNum}`, "drit");
   const {rs, open} = dritState(d);
   const details = `<h2>Test details</h2><div class="panel"><div class="grid">
     <div class="field wide"><label>Project</label><p style="margin:0"><span class="tag">${esc(p?p.fullNo:d.projectNum)}</span> ${esc(p&&p.site||"")}</p></div>
@@ -1192,13 +1321,13 @@ function renderDrit(d){
     <div class="field wide"><label for="f_w3w">what3words <span class="unit">optional</span></label><input id="f_w3w" data-k="w3w" type="text" value="${esc(d.w3w)}" autocapitalize="none" autocomplete="off" autocorrect="off" spellcheck="false" placeholder="e.g. keyboard.assembles.myths">
       <p class="muted small" style="margin:4px 0 0" id="w3w_note"></p></div>
   </div></div>`;
-  let h = (dritError ? `<p class="notice err-notice">${esc(dritError)}</p>` : "") + stripHTML(d);
+  let h = (dritError ? `<p class="notice err-notice">${esc(dritError)}</p>` : "") + (d.finished ? "" : `<p class="muted small" style="margin:0 2px 10px"><span class="pill warn-p">WIP</span> DRIT tests are still being tested. Keep a paper record as backup.</p>`) + stripHTML(d);
   const runsBlock = `<div class="ctrl" id="drit_ctrl">${ctrlHTML(d)}</div>
-    ${rs.length?`<h2>Runs</h2><div class="runs">${rs.map((r,i)=>runCardHTML(d, r, i===rs.length-1, open && i===rs.length-1)).join("")}</div>`:""}`;
-  h += rs.length ? runsBlock + details : details + `<h2>Runs</h2>` + runsBlock;
+    ${rs.length?`<h2>Fills</h2><div class="runs">${rs.map((r,i)=>runCardHTML(d, r, i===rs.length-1, open && i===rs.length-1)).join("")}</div>`:""}`;
+  h += rs.length ? runsBlock + details : details + `<h2>Fills</h2>` + runsBlock;
   h += `<h2>Results</h2><div class="panel" id="drit_sum"></div>`;
   h += `<h2>Spreadsheet</h2><div class="panel"><p class="small"><strong>DRIT sheet for this test</strong></p>
-    <p class="muted small">Filled into the company template with the graph. Completed runs only. "Checked by" is left to complete by hand.</p>${emailBlock("export-drit")}</div>`;
+    <p class="muted small">Filled into the company template with the graph. Completed fills only, with times counted from 0:00 at the start of fill 1. "Checked by" is left to complete by hand.</p>${emailBlock("export-drit")}</div>`;
   h += `<h2>Other</h2><div>${sliderHTML("Slide to delete this test","del-drit")}</div>`;
   $("#app").innerHTML = h;
   bindEmailTo();
@@ -1241,12 +1370,12 @@ function dritEnd(){
 function dritFinish(on){
   const d = curDrit(); if(!d) return;
   if(on){ const {last, open} = dritState(d);
-    if(open && !confirm(`Run ${last.n} hasn't been read yet, so it will be left out of the spreadsheet. Finish anyway?`)) return; }
+    if(open && !confirm(`Fill ${last.n} hasn't been read yet, so it will be left out of the spreadsheet. Finish anyway?`)) return; }
   applyEdit("finished", on); flush(); toast(on ? "Test finished" : "Test reopened"); route(true);
 }
 function dritRemoveRun(runId){
   const d = curDrit(); if(!d) return; const r = (d.runs||{})[runId]; if(!r) return;
-  if(!confirm(`Remove run ${r.n}${filled(r.after)||filled(r.before)?" and its readings":""}?`)) return;
+  if(!confirm(`Remove fill ${r.n}${filled(r.after)||filled(r.before)?" and its readings":""}?`)) return;
   applyEdit(`runs.${runId}.removed`, true); flush(); route(true);
 }
 async function dritGps(){
@@ -1266,7 +1395,7 @@ async function exportDrit(d, mode){
   if(!window.fillDRIT || !window.JSZip){ toast("The template code isn't loaded. Open the app once with signal."); return; }
   flush();
   const p = projects.get(d.projectNum), fullNo = p ? p.fullNo : d.projectNum, done = dritCompleted(d), rs = runList(d);
-  if(!done.length){ toast("There are no completed runs to export yet."); return; }
+  if(!done.length){ toast("There are no completed fills to export yet."); return; }
   let buf;
   try{
     if(!dritTemplateBuf){ const res = await fetch("DRIT_template.xlsx"); if(!res.ok) throw new Error("template missing"); dritTemplateBuf = await res.arrayBuffer(); }
@@ -1275,13 +1404,13 @@ async function exportDrit(d, mode){
   }catch(e){ toast("Couldn't build the spreadsheet: "+(e.message||e), 6000); return; }
   const name = `${String(fullNo).replace(/,/g,"_")}_Drit_Sheet_${safeName(d.location||"test").replace(/-/g,"_")}.xlsx`;
   const notes = [];
-  if(done.length > DRIT_TEMPLATE_RUNS) notes.push(`More than ${DRIT_TEMPLATE_RUNS} runs – check output spreadsheet.`);
-  if(done.length < rs.length) notes.push(`${rs.length-done.length} incomplete run${rs.length-done.length===1?"":"s"} left out.`);
+  if(done.length > DRIT_TEMPLATE_RUNS) notes.push(`More than ${DRIT_TEMPLATE_RUNS} fills – check output spreadsheet.`);
+  if(done.length < rs.length) notes.push(`${rs.length-done.length} incomplete fill${rs.length-done.length===1?"":"s"} left out.`);
   if(notes.length) toast(notes.join(" "), 6000);
   const c = dritCalc(done);
   await exportFile(new File([buf], name, {type:XLSX_TYPE}), mode, `DRIT – ${fullNo} ${p&&p.site||""} – ${d.location||""}`.replace(/\s+/g," ").trim(),
     [`Double ring infiltrometer test attached: ${name}`, "", `Project: ${fullNo}`, `Site: ${p&&p.site||"–"}`, `Location: ${d.location||"–"}`, `Date: ${fmtDate(d.date,false)}`,
-     `Undertaken by: ${d.by||"–"}`, `Completed runs: ${done.length}`, `Average infiltration capacity: ${c.avgRate!==null?c.avgRate.toFixed(2):"–"} mm/min (${fmtSci(c.avgMs)} m/s)`, ...notes]);
+     `Undertaken by: ${d.by||"–"}`, `Completed fills: ${done.length}`, `Average infiltration capacity: ${c.avgRate!==null?c.avgRate.toFixed(2):"–"} mm/min (${fmtSci(c.avgMs)} m/s)`, ...notes]);
 }
 // Live timers: anything with data-since counts up from that moment.
 setInterval(()=>{ const now = Date.now(); document.querySelectorAll("[data-since]").forEach(el=>{ el.textContent = fmtElapsed(now - Number(el.dataset.since)); }); }, 1000);
@@ -1300,8 +1429,8 @@ document.addEventListener("input", e=>{
   const k = e.target.dataset && e.target.dataset.k; if(!k) return;
   applyEdit(k, e.target.value);
   if(cur.kind==="loc" && k==="name"){ const h=$("#bar h1"); if(h) h.textContent=e.target.value||"Unnamed"; }
-  if(cur.kind==="drit"){ if(k==="location"){ const h=$("#bar h1"); if(h) h.textContent=e.target.value||"Infiltration test"; } paintDrit(); }
-  paintWarnings();
+  if(cur.kind==="drit"){ if(k==="location"){ const h=$("#bar h1"); if(h) h.textContent=e.target.value||"DRIT test"; } paintDrit(); }
+  paintWarnings(); paintProjWarnings();
 });
 document.addEventListener("change", e=>{ if(e.target.dataset && e.target.dataset.k) flush(); });
 document.addEventListener("keydown", e=>{
@@ -1334,9 +1463,12 @@ document.addEventListener("click", e=>{
   else if(act==="verify-continue") verifyContinue();
   else if(act==="verify-resend"){ FB.sendEmailVerification(user, {url: location.href.split("#")[0]}).then(()=>toast("Sent again. Check your inbox.")).catch(authError); }
   else if(act==="sign-out"){ flush(); FB.signOut(auth); location.hash="#/"; }
-  else if(act==="toggle-completed"){ showCompleted=!showCompleted; $("#plist").innerHTML=projectListHTML(); }
+  else if(act==="toggle-completed"){ const m=cur.mod||"gas"; showCompleted[m]=!showCompleted[m]; $("#plist").innerHTML=projectListHTML(m); }
   else if(act==="create-project") createProject();
-  else if(act==="toggle-project-done"){ applyEdit("gasCompleted", !gasDone(p)); flush(); toast(gasDone(p)?"Gas monitoring marked completed":"Gas monitoring reopened"); route(); }
+  else if(act==="toggle-project-done"){
+    if(cur.mod==="drit"){ applyEdit("dritCompleted", !dritDone(p)); flush(); toast(dritDone(p)?"DRIT tests marked completed":"DRIT tests reopened"); }
+    else { applyEdit("gasCompleted", !gasDone(p)); flush(); toast(gasDone(p)?"Gas monitoring marked completed":"Gas monitoring reopened"); }
+    route(); }
   else if(act==="new-visit") newVisit(p);
   else if(act==="add-loc") bindAddLoc.go();
   else if(act==="show-move"){ const b=$("#moveBox"); b.hidden=!b.hidden; }
@@ -1370,7 +1502,7 @@ function slideDone(act){
   if(act==="del-drit"){
     const d = drits.get(cur.dritId); if(!d) return false;
     d.deleted = true; queueUpdate("drits", d.id, "deleted", true); flush(); saveBackup(); drits.delete(d.id);
-    location.hash = `#/p/${d.projectNum}`; toast("Infiltration test deleted"); return true;
+    location.hash = `#/dp/${d.projectNum}`; toast("DRIT test deleted"); return true;
   }
   const v = curVisit(); if(!v) return false;
   if(act==="del-loc"){
@@ -1416,10 +1548,18 @@ function route(keepScroll){
   const p = (location.hash.slice(1)||"/").split("/").filter(Boolean);
   if(!keepScroll) window.scrollTo(0,0);
   const ready = loaded.projects && loaded.visits;
-  if(p[0]==="newproject") renderNewProject();
+  // On opening the app, go straight to the tool used last. The launcher is one tap back.
+  if(!route.done && !p.length && dritOn() && lastMod()){ p.push(lastMod()); try{ history.replaceState(null, "", "#/"+lastMod()); }catch(e){} }
+  route.done = true;
+  const dritWait = () => { bar("DRIT tests", "#/", "drit"); $("#app").innerHTML=`<p class="muted" style="text-align:center;padding:40px 0">Loading…</p>`; };
+  if(!p.length) dritOn() ? renderLauncher() : renderHome("gas");
+  else if(p[0]==="gas") renderHome("gas");
+  else if(p[0]==="drit" && dritOn()) renderHome("drit");
+  else if(p[0]==="newproject") renderNewProject(p[1]==="drit" && dritOn() ? "drit" : "gas");
   else if(p[0]==="import") renderImport();
   else if(p[0]==="restore") renderRestore();
-  else if(ready && p[0]==="p" && projects.has(p[1])){ const pr=projects.get(p[1]); p[2]==="edit" ? renderProjectEdit(pr) : renderProject(pr); }
+  else if(ready && p[0]==="p" && projects.has(p[1])){ const pr=projects.get(p[1]); p[2]==="edit" ? renderProjectEdit(pr, "gas") : renderProject(pr); }
+  else if(ready && p[0]==="dp" && dritOn() && projects.has(p[1])){ const pr=projects.get(p[1]); p[2]==="edit" ? renderProjectEdit(pr, "drit") : loaded.drits ? renderDritProject(pr) : dritWait(); }
   else if(ready && p[0]==="v" && visits.has(p[1])){
     const v=visits.get(p[1]);
     if(p[2]==="l" && projects.has(v.projectNum) && (projects.get(v.projectNum).locations||{})[p[3]]) renderLoc(v,p[3]);
@@ -1428,8 +1568,9 @@ function route(keepScroll){
     else renderVisit(v);
   }
   else if(ready && p[0]==="d" && dritOn() && drits.has(p[1])) renderDrit(drits.get(p[1]));
-  else if(ready && p[0]==="d" && dritOn() && !loaded.drits){ bar("Infiltration test", "#/"); $("#app").innerHTML=`<p class="muted" style="text-align:center;padding:40px 0">Loading…</p>`; }
-  else renderHome();
+  else if(ready && p[0]==="d" && dritOn() && !loaded.drits) dritWait();
+  else if(!ready && ["p","dp","v","d"].includes(p[0])){ bar("Loading", "#/"); $("#app").innerHTML=`<p class="muted" style="text-align:center;padding:40px 0">Loading…</p>`; }
+  else dritOn() ? renderLauncher() : renderHome("gas");
   if(keepScroll) window.scrollTo(0,y);
 }
 window.addEventListener("hashchange", ()=>route());
