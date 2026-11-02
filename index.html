@@ -195,7 +195,7 @@ button:focus-visible,a:focus-visible{outline:3px solid var(--hv);outline-offset:
 <script src="weather.js"></script>
 <script>
 "use strict";
-const APP_VERSION = "3.2"; // keep in step with CACHE in sw.js
+const APP_VERSION = "3.4"; // keep in step with CACHE in sw.js
 
 /* ---------- Settings ---------- */
 const FIREBASE_CONFIG = {
@@ -215,7 +215,11 @@ const DRIT_USERS = ["petercoynework@gmail.com"];
 
 /* ---------- Field definitions ---------- */
 const VISIT_NOS = ["1st","2nd","3rd","4th","5th","6th"];
-const INSTRUMENTS = ["GFM436 / MiniRAE (Yellow)","GFM436 / MultiRAE (Green)","Other"];
+const INSTRUMENTS = ["GFM436 / MiniRAE (Green)","GFM436 / MultiRAE (Yellow)","Other"];
+// Before version 3.4 the colours were the wrong way round. Visits saved then are read with the corrected colour,
+// keeping the same instrument (MiniRAE or MultiRAE).
+const OLD_INSTRUMENTS = {"GFM436 / MiniRAE (Yellow)":"GFM436 / MiniRAE (Green)","GFM436 / MultiRAE (Green)":"GFM436 / MultiRAE (Yellow)"};
+function fixInstrument(v){ if(v && OLD_INSTRUMENTS[v.instrument]) v.instrument = OLD_INSTRUMENTS[v.instrument]; return v; }
 const WEATHER = [
   {k:"temp", opts:["Cold","Cool","Warm","Hot"]},
   {k:"sky",  opts:["Sunny","Cloudy","Overcast"]},
@@ -226,18 +230,18 @@ const LOC_STATUS = ["Monitored","Not accessed","Destroyed"];
 const TRENDS = ["Rising","Steady","Falling"];
 const SEG_DEFAULTS = {status:"Monitored", pressureTrend:"Steady"};
 // Instrument names as written in the GGT012 template's drop-down.
-const INSTRUMENT_TEMPLATE = {"GFM436 / MiniRAE (Yellow)":"GFM436 gas analyser  / PID MiniRAE lite","GFM436 / MultiRAE (Green)":"GFM436 gas analyser  / PID MultiRAE lite"};
+const INSTRUMENT_TEMPLATE = {"GFM436 / MiniRAE (Green)":"GFM436 gas analyser  / PID MiniRAE lite","GFM436 / MultiRAE (Yellow)":"GFM436 gas analyser  / PID MultiRAE lite"};
 const GAS_CHIPS = ["<0.1","nm"];
 const LOC_GROUPS = [
   {title:"Atmospheric pressure", fields:[{k:"pressure",label:"Pressure",unit:"mb",chips:["nm"]}]},
-  {title:"Flow", unit:"l/hr", fields:[{k:"flowPeak",label:"Peak",chips:["0","nm"]},{k:"flowSteady",label:"Steady",chips:["0","nm"]}]},
+  {title:"Flow", unit:"l/hr", fields:[{k:"flowPeak",label:"Peak",chips:["<0.1","nm"]},{k:"flowSteady",label:"Steady",chips:["<0.1","nm"]}]},
   {title:"Methane", unit:"% v/v", fields:[{k:"ch4Peak",label:"Peak",chips:GAS_CHIPS},{k:"ch4Steady",label:"Steady",chips:GAS_CHIPS}]},
   {title:"Carbon dioxide", unit:"% v/v", fields:[{k:"co2Peak",label:"Peak",chips:GAS_CHIPS},{k:"co2Steady",label:"Steady",chips:GAS_CHIPS}]},
   {title:"Oxygen and other gases", fields:[
     {k:"o2Min",label:"Min. O₂",unit:"% v/v",chips:["nm"]},
-    {k:"h2s",label:"H₂S",unit:"ppm",chips:["0","nm"]},
-    {k:"co",label:"CO",unit:"ppm",chips:["0","nm"]},
-    {k:"voc",label:"VOCs / PID",unit:"ppm",chips:["0","nm"]}]},
+    {k:"h2s",label:"H₂S",unit:"ppm",chips:["<1","nm"]},
+    {k:"co",label:"CO",unit:"ppm",chips:["<1","nm"]},
+    {k:"voc",label:"VOCs / PID",unit:"ppm",chips:"voc"}]},
   {title:"Well", fields:[
     {k:"duration",label:"Monitoring duration",unit:"mins",chips:[]},
     {k:"pipeHeight",label:"Pipe/casing height",unit:"m",chips:["nm"]},
@@ -249,9 +253,9 @@ const FRESH_FIELDS = [
   {k:"ch4",label:"Methane",unit:"% v/v",chips:GAS_CHIPS},
   {k:"co2",label:"Carbon dioxide",unit:"% v/v",chips:GAS_CHIPS},
   {k:"o2",label:"Oxygen",unit:"% v/v",chips:["nm"]},
-  {k:"h2s",label:"H₂S",unit:"ppm",chips:["0","nm"]},
-  {k:"co",label:"CO",unit:"ppm",chips:["0","nm"]},
-  {k:"voc",label:"VOCs / PID",unit:"ppm",chips:["0","nm"]}
+  {k:"h2s",label:"H₂S",unit:"ppm",chips:["<1","nm"]},
+  {k:"co",label:"CO",unit:"ppm",chips:["<1","nm"]},
+  {k:"voc",label:"VOCs / PID",unit:"ppm",chips:"voc"}
 ];
 
 /* ---------- Helpers ---------- */
@@ -334,7 +338,7 @@ function startListeners(){
     loaded.projects = true; pendingRemote.projects = snap.metadata.hasPendingWrites; syncError=""; onData();
   }, onErr));
   unsubs.push(FB.onSnapshot(FB.query(FB.collection(fdb,"visits"), FB.where("deleted","==",false)), {includeMetadataChanges:true}, snap => {
-    visits.clear(); snap.forEach(d => visits.set(d.id, {...d.data(), id:d.id}));
+    visits.clear(); snap.forEach(d => visits.set(d.id, fixInstrument({...d.data(), id:d.id})));
     reapplyPending("visits", visits);
     loaded.visits = true; pendingRemote.visits = snap.metadata.hasPendingWrites; syncError=""; onData();
   }, onErr));
@@ -496,7 +500,16 @@ function paintStatus(){
 }
 
 /* ---------- Shared bits of UI ---------- */
+// VOC limit of detection depends on the PID: <0.1 ppm for the green, <1 ppm for the yellow.
+// With no instrument chosen (or Other), both are offered.
+function vocChips(){
+  const inst = (curVisit()||{}).instrument||"";
+  if(/green/i.test(inst)) return ["<0.1","nm"];
+  if(/yellow/i.test(inst)) return ["<1","nm"];
+  return ["<0.1","<1","nm"];
+}
 function fieldHTML(f, o, prev){
+  if(f.chips==="voc") f = {...f, chips:vocChips()};
   const chips = (f.chips||[]).length ? `<div class="chips">${f.chips.map(c=>`<button type="button" class="chip" data-chip="${esc(c)}" data-for="${f.k}">${esc(c)}</button>`).join("")}</div>` : "";
   const last = prev ? `<p class="last">Last: <b>${esc(prev.val)}</b> <span>(${esc(prev.visit)})</span></p>` : "";
   return `<div class="field" id="fd_${f.k}"><label for="f_${f.k}">${esc(f.label)}${f.unit?` <span class="unit">${esc(f.unit)}</span>`:""}</label>
@@ -1000,7 +1013,7 @@ function importLegacy(id){
   const byName={}; projLocs(p).forEach(l=>byName[l.name.toUpperCase()]=l.id);
   const readings={};
   for(const l of old.locations||[]){ const r={}; LOC_FIELDS.forEach(f=>{ if(filled(l[f.k])) r[f.k]=l[f.k]; }); if(filled(l.notes)) r.notes=l.notes; const key=byName[String(l.name).trim().toUpperCase()]; if(key) readings[key]=r; }
-  const fields = {}; ["visitNo","datetime","by","instrument","instrumentOther","temp","sky","wet","wind","recentWeather","airTemp","relativeTo"].forEach(k=>fields[k]=old[k]||"");
+  const fields = {}; ["visitNo","datetime","by","instrument","instrumentOther","temp","sky","wet","wind","recentWeather","airTemp","relativeTo"].forEach(k=>fields[k]=old[k]||""); fixInstrument(fields);
   createDoc("visits", uid(), {...fields, projectNum:p.id, freshAir:old.freshAir||{}, readings, deleted:false, exportedAt:0});
   try{ const done=JSON.parse(localStorage.getItem(IMPORTED_KEY)||"[]"); done.push(id); localStorage.setItem(IMPORTED_KEY, JSON.stringify(done)); }catch(e){}
   toast(`Filed under ${p.fullNo}`); renderImport();
