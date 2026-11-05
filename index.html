@@ -195,7 +195,7 @@ button:focus-visible,a:focus-visible{outline:3px solid var(--hv);outline-offset:
 <script src="weather.js"></script>
 <script>
 "use strict";
-const APP_VERSION = "3.4"; // keep in step with CACHE in sw.js
+const APP_VERSION = "3.5"; // keep in step with CACHE in sw.js
 
 /* ---------- Settings ---------- */
 const FIREBASE_CONFIG = {
@@ -265,6 +265,27 @@ const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt
 const filled = v => v !== undefined && v !== null && String(v).trim() !== "";
 const isNum = v => /^-?(\d+\.?\d*|\.\d+)$/.test(String(v).trim());
 const num = v => isNum(v) ? parseFloat(v) : null;
+/* Reading tidy-up (used when a field is left and again when exporting).
+   ".1" becomes "0.1" and "<.1" becomes "<0.1".
+   A zero becomes the field's limit of detection, or "0.0" where the field has none. */
+const READING_LOD = {flowPeak:"<0.1",flowSteady:"<0.1",ch4Peak:"<0.1",ch4Steady:"<0.1",co2Peak:"<0.1",co2Steady:"<0.1",
+  ch4:"<0.1",co2:"<0.1",h2s:"<1",co:"<1",voc:"voc",pressure:null,o2Min:null,o2:null};
+function lodFor(k, inst){
+  const l = READING_LOD[k]; if(l!=="voc") return l||null;
+  if(/green/i.test(inst||"")) return "<0.1";
+  if(/yellow/i.test(inst||"")) return "<1";
+  return null; // PID not known, so no limit of detection to use
+}
+function tidyReading(k, v, inst){
+  if(!filled(v)) return v;
+  let s = String(v).trim().replace(/^<\s+/, "<").replace(/^(-|<)?\.(\d)/, (m,p,d)=>(p||"")+"0."+d);
+  if((k in READING_LOD) && isNum(s) && parseFloat(s)===0) return lodFor(k, inst) || "0.0";
+  return s;
+}
+// Value for a spreadsheet cell: numbers as numbers, but keep "0.0" as written.
+function readingOut(k, v, inst){ const t = tidyReading(k, v, inst); return t==="0.0" ? "0.0" : cellVal(t); }
+// Peak fields whose Steady field follows when <LOD or nm is tapped.
+const PEAK_STEADY = {flowPeak:"flowSteady", ch4Peak:"ch4Steady", co2Peak:"co2Steady"};
 function nowLocal(){ const d=new Date(); d.setMinutes(d.getMinutes()-d.getTimezoneOffset()); return d.toISOString().slice(0,16); }
 function fmtDate(s, withTime=true){ if(!s) return "No date"; const d=new Date(s); if(isNaN(d)) return String(s);
   return d.toLocaleString("en-GB", withTime ? {day:"numeric",month:"short",year:"numeric",hour:"2-digit",minute:"2-digit"} : {day:"numeric",month:"short",year:"numeric"}); }
@@ -1031,8 +1052,8 @@ const XLSX_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.s
 const DATA_COLS = ["Location","Status","Atmospheric pressure (mb)","Pressure trend","Flow peak (l/hr)","Flow steady (l/hr)","CH4 peak (% v/v)","CH4 steady (% v/v)","CO2 peak (% v/v)","CO2 steady (% v/v)","Min O2 (% v/v)","H2S (ppm)","CO (ppm)","VOCs / PID (ppm)","Monitoring duration (mins)","Pipe/casing height (m)","Depth to water (m)","Depth to base of well (m)","Notes"];
 const META_COLS = ["Project number","Site","Visit number","Date / time","Fieldwork by","Instrument","Weather","Air temp (°C)","Readings relative to"];
 function visitMeta(v, p){ return [p.fullNo, p.site||"", v.visitNo||"", v.datetime||"", v.by||"", instText(v), weatherText(v), cellVal(v.airTemp), v.relativeTo||""]; }
-function freshRow(v){ const fa=v.freshAir||{}; return ["Fresh air","","","","","",cellVal(fa.ch4),"",cellVal(fa.co2),"",cellVal(fa.o2),cellVal(fa.h2s),cellVal(fa.co),cellVal(fa.voc),"","","","",""]; }
-function locRow(name, r, v){ const vals=LOC_FIELDS.map(f=>cellVal(r[f.k])); return [name, r.status&&r.status!=="Monitored"?r.status:"", vals[0], (v&&v.pressureTrend)||"Steady", ...vals.slice(1), r.notes||""]; }
+function freshRow(v){ const fa=v.freshAir||{}, o=k=>readingOut(k, fa[k], v.instrument); return ["Fresh air","","","","","",o("ch4"),"",o("co2"),"",o("o2"),o("h2s"),o("co"),o("voc"),"","","","",""]; }
+function locRow(name, r, v){ const vals=LOC_FIELDS.map(f=>readingOut(f.k, r[f.k], v&&v.instrument)); return [name, r.status&&r.status!=="Monitored"?r.status:"", vals[0], (v&&v.pressureTrend)||"Steady", ...vals.slice(1), r.notes||""]; }
 function dataSheet(rows){ const ws=XLSX.utils.aoa_to_sheet([[...META_COLS,...DATA_COLS], ...rows]); ws["!cols"]=[...META_COLS,...DATA_COLS].map(c=>({wch:Math.max(12,Math.min(30,c.length+2))})); return ws; }
 function buildVisitWorkbook(v, p){
   const header = [["GAS AND GROUNDWATER MONITORING RECORD"],[],
@@ -1065,8 +1086,9 @@ function buildProjectWorkbook(p){
       const bgl = val => { if(!fromTop) return cellVal(val); const d=num(val); return (d===null||ph===null) ? cellVal(val) : Math.round((d-ph)*100)/100; };
       if(fromTop && ph===null && (isNum(r.depthWater)||isNum(r.depthBase))) comments.push("Depths from top of pipe (no pipe height recorded)");
       if(filled(r.notes)) comments.push(r.notes.trim());
-      aoa.push([(v.visitNo||"?")+" visit", toDate(v.datetime), skipped?"":cellVal(r.pressure), skipped?"":cellVal(r.ch4Peak), skipped?"":lel(r.ch4Peak), skipped?"":cellVal(r.co2Peak), skipped?"":cellVal(r.o2Min), skipped?"":cellVal(r.flowPeak),
-        skipped?"":cellVal(r.h2s), skipped?"":cellVal(r.co), skipped?"":cellVal(r.voc), skipped?"":bgl(r.depthWater), skipped?"":bgl(r.depthBase), weatherText(v), comments.join(". ")]);
+      const o = k => readingOut(k, r[k], v.instrument);
+      aoa.push([(v.visitNo||"?")+" visit", toDate(v.datetime), skipped?"":o("pressure"), skipped?"":o("ch4Peak"), skipped?"":lel(tidyReading("ch4Peak",r.ch4Peak)), skipped?"":o("co2Peak"), skipped?"":o("o2Min"), skipped?"":o("flowPeak"),
+        skipped?"":o("h2s"), skipped?"":o("co"), skipped?"":o("voc"), skipped?"":bgl(r.depthWater), skipped?"":bgl(r.depthBase), weatherText(v), comments.join(". ")]);
       allRows.push([...visitMeta(v,p), ...locRow(l.name, r, v)]);
     }
     aoa.push([],["Instruments Used:",insts],["Methane, carbon dioxide and flow are peak readings. nm = not measured."]);
@@ -1115,8 +1137,9 @@ async function buildGGT012Files(p){
       [N,O].forEach(x=>{ if(typeof x==="number") waterMax=Math.max(waterMax,x); });
       // Anything left blank on a monitored visit is written as "nm" (not measured).
       const nm = x => (x===""||x===null||x===undefined) ? "nm" : x;
-      return {C:label, D:excelDate(v.datetime), E:nm(cellVal(r.pressure)), F:nm(cellVal(r.ch4Peak)), G:nm(lel(r.ch4Peak)), H:nm(cellVal(r.co2Peak)), I:nm(cellVal(r.o2Min)), J:nm(cellVal(r.flowPeak)),
-        K:nm(cellVal(r.h2s)), L:nm(cellVal(r.co)), M:nm(cellVal(r.voc)), N:nm(N), O:nm(O), P:sentenceCase(weatherText(v)), Q:c.join(". ")};
+      const o = k => readingOut(k, r[k], v.instrument);
+      return {C:label, D:excelDate(v.datetime), E:nm(o("pressure")), F:nm(o("ch4Peak")), G:nm(lel(tidyReading("ch4Peak",r.ch4Peak))), H:nm(o("co2Peak")), I:nm(o("o2Min")), J:nm(o("flowPeak")),
+        K:nm(o("h2s")), L:nm(o("co")), M:nm(o("voc")), N:nm(N), O:nm(O), P:sentenceCase(weatherText(v)), Q:c.join(". ")};
     });
     return {name:l.name, rows, remarks, instruments:[...insts].filter(filled).join("; "), waterMax: waterMax ? Math.ceil(waterMax) : 0};
   });
@@ -1494,7 +1517,14 @@ document.addEventListener("input", e=>{
   if(cur.kind==="drit"){ if(k==="location"){ const h=$("#bar h1"); if(h) h.textContent=e.target.value||"DRIT test"; } paintDrit(); }
   paintWarnings(); paintProjWarnings();
 });
-document.addEventListener("change", e=>{ if(e.target.dataset && e.target.dataset.k) flush(); });
+document.addEventListener("change", e=>{
+  const k = e.target.dataset && e.target.dataset.k; if(!k) return;
+  if((cur.kind==="loc" || cur.kind==="fresh") && k!=="name" && (k in READING_LOD || isNum(e.target.value))){
+    const t = tidyReading(k, e.target.value, (curVisit()||{}).instrument);
+    if(t!==e.target.value){ e.target.value = t; applyEdit(k, t); paintWarnings(); }
+  }
+  flush();
+});
 document.addEventListener("keydown", e=>{
   if(e.key==="Enter" && e.target.id==="drit_level"){ e.preventDefault(); const b=document.querySelector(`#drit_ctrl [data-act="${e.target.dataset.levelAct}"]`); if(b) b.click(); return; }
   if(e.key!=="Enter" || !e.target.matches("input[data-k]")) return;
@@ -1503,7 +1533,10 @@ document.addEventListener("keydown", e=>{
 });
 document.addEventListener("click", e=>{
   const chip = e.target.closest(".chip");
-  if(chip){ const k=chip.dataset.for, inp=$("#f_"+k); inp.value=chip.dataset.chip; applyEdit(k, chip.dataset.chip); flush(); paintWarnings(); return; }
+  if(chip){ const k=chip.dataset.for, inp=$("#f_"+k), val=chip.dataset.chip; inp.value=val; applyEdit(k, val);
+    const sk = cur.kind==="loc" && PEAK_STEADY[k], si = sk && $("#f_"+sk);
+    if(si){ si.value=val; applyEdit(sk, val); }
+    flush(); paintWarnings(); return; }
   const segBtn = e.target.closest(".seg button");
   if(segBtn){ const seg=segBtn.parentElement, k=seg.dataset.set, o=curObj(); if(!o) return;
     let val = (o[k]===segBtn.dataset.val) ? "" : segBtn.dataset.val;
