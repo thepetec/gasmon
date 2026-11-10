@@ -4,10 +4,10 @@
 // To release an update: change CACHE here AND APP_VERSION in index.html.
 // Other Geosphere tools are on the same web address, so they share this phone storage area.
 // Only this tool's own old caches (names starting "gasfield-") are ever removed.
-const CACHE = "gasfield-3.5";
+const CACHE = "gasfield-3.6";
 const ASSETS = ["./", "./index.html", "./xlsx.full.min.js", "./firebase.js", "./jszip.min.js", "./ggt012.js", "./weather.js", "./GGT012.xltx", "./drit.js", "./DRIT_template.xlsx", "./manifest.webmanifest",
                 "./icon-192.png", "./icon-512.png", "./apple-touch-icon.png"];
-
+ 
 self.addEventListener("install", e => {
   // cache: "reload" skips the browser's own HTTP cache so a new version never stores old files.
   e.waitUntil(caches.open(CACHE).then(cache => Promise.all(ASSETS.map(url =>
@@ -17,17 +17,17 @@ self.addEventListener("install", e => {
     })
   ))).then(() => self.skipWaiting()));
 });
-
+ 
 self.addEventListener("activate", e => {
   e.waitUntil(caches.keys()
     .then(keys => Promise.all(keys.filter(k => k.startsWith("gasfield-") && k !== CACHE).map(k => caches.delete(k))))
     .then(() => self.clients.claim()));
 });
-
+ 
 function withTimeout(promise, ms) {
   return Promise.race([promise, new Promise((_, rej) => setTimeout(() => rej(new Error("timeout")), ms))]);
 }
-
+ 
 async function pageNetworkFirst(req) {
   const cache = await caches.open(CACHE);
   try {
@@ -38,7 +38,7 @@ async function pageNetworkFirst(req) {
     new Response("Offline and not saved on this phone yet. Open once with signal.",
                  { status: 503, headers: { "Content-Type": "text/plain" } });
 }
-
+ 
 async function assetStaleWhileRevalidate(e, req) {
   const cache = await caches.open(CACHE);
   const cached = await cache.match(req, { ignoreSearch: true });
@@ -48,10 +48,11 @@ async function assetStaleWhileRevalidate(e, req) {
   if (cached) { e.waitUntil(fresh); return cached; }
   return (await fresh) || new Response("", { status: 504 });
 }
-
+ 
 self.addEventListener("fetch", e => {
   const req = e.request;
   if (req.method !== "GET" || new URL(req.url).origin !== location.origin) return;
   if (req.mode === "navigate") e.respondWith(pageNetworkFirst(req));
   else e.respondWith(assetStaleWhileRevalidate(e, req));
 });
+ 

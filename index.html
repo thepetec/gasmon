@@ -195,7 +195,7 @@ button:focus-visible,a:focus-visible{outline:3px solid var(--hv);outline-offset:
 <script src="weather.js"></script>
 <script>
 "use strict";
-const APP_VERSION = "3.5"; // keep in step with CACHE in sw.js
+const APP_VERSION = "3.6"; // keep in step with CACHE in sw.js
 
 /* ---------- Settings ---------- */
 const FIREBASE_CONFIG = {
@@ -408,10 +408,24 @@ function queueUpdate(col, id, path, value){
   paintStatus();
 }
 function reapplyPending(col, map){ for(const p of pend.values()){ if(p.col!==col) continue; const o=map.get(p.id); if(o) for(const [k,v] of Object.entries(p.fields)) setPath(o,k,v); } }
+/* Save log: every save is also written as its own entry in the saveLog collection.
+   Entries are never changed or deleted (see firestore.rules), so a record can be traced and rebuilt.
+   The app never reads the log back, so it doesn't slow anything down. */
+const DEVICE = (()=>{ const u=navigator.userAgent; return /iPhone|iPad/.test(u) ? "iPhone/iPad" : /Android/.test(u) ? "Android" : /Windows/.test(u) ? "Windows" : /Mac/.test(u) ? "Mac" : "Other"; })();
+function logSave(col, id, fields, kind){
+  try{
+    const changes = Object.entries(fields).filter(([,v])=>v!==undefined).map(([path,value])=>({path, value}));
+    if(!changes.length) return;
+    FB.setDoc(FB.doc(fdb, "saveLog", uid()+uid()), {col, docId:id, kind:kind||"update", changes,
+      by:user.email, at:FB.serverTimestamp(), phoneTime:new Date().toISOString(), app:APP_VERSION, device:DEVICE})
+      .catch(e => console.warn("Save log entry not written:", e.code||e.message)); // never blocks or flags the real save
+  }catch(e){ console.warn("Save log entry not written:", e); }
+}
 function flush(){
   clearTimeout(flushTimer); flushTimer=null;
   for(const [key,p] of pend){
     pend.delete(key);
+    logSave(p.col, p.id, p.fields);
     FB.updateDoc(FB.doc(fdb, p.col, p.id), {...p.fields, updatedAt:FB.serverTimestamp(), updatedBy:user.email})
       .catch(e => { syncError = "Couldn't save a change: " + (e.code||e.message); paintStatus(); });
   }
@@ -426,6 +440,7 @@ function createDoc(col, id, data){
   colMap(col).set(id, local);
   markBackup(col, id);
   FB.setDoc(FB.doc(fdb, col, id), full, {merge:true}).catch(e => { syncError = "Couldn't save: " + (e.code||e.message); paintStatus(); });
+  logSave(col, id, data, "create");
   return local;
 }
 
@@ -1014,10 +1029,10 @@ function renderRestore(){
     <div class="row" style="margin-top:14px"><button class="btn primary" data-act="do-restore">Restore to database</button><button class="btn" data-act="forget-lost">Clear this list</button></div>`;
 }
 function restoreLost(){
-  const lost = lostRecords(); const strip = b => { const c={...b}; delete c.id; return c; };
-  for(const b of lost.projects){ projects.set(b.id, b); FB.setDoc(FB.doc(fdb,"projects",b.id), {...strip(b), updatedAt:FB.serverTimestamp(), updatedBy:user.email}, {merge:true}).catch(e=>{ syncError="Couldn't restore: "+(e.code||e.message); paintStatus(); }); }
-  for(const b of lost.visits){ visits.set(b.id, b); FB.setDoc(FB.doc(fdb,"visits",b.id), {...strip(b), deleted:false, updatedAt:FB.serverTimestamp(), updatedBy:user.email}, {merge:true}).catch(e=>{ syncError="Couldn't restore: "+(e.code||e.message); paintStatus(); }); }
-  for(const b of lost.drits){ drits.set(b.id, b); FB.setDoc(FB.doc(fdb,"drits",b.id), {...strip(b), deleted:false, updatedAt:FB.serverTimestamp(), updatedBy:user.email}, {merge:true}).catch(e=>{ dritError="Couldn't restore: "+(e.code||e.message); paintStatus(); }); }
+  const lost = lostRecords(); const strip = (b, col) => { const c={...b}; delete c.id; logSave(col, b.id, c, "restore"); return c; };
+  for(const b of lost.projects){ projects.set(b.id, b); FB.setDoc(FB.doc(fdb,"projects",b.id), {...strip(b,"projects"), updatedAt:FB.serverTimestamp(), updatedBy:user.email}, {merge:true}).catch(e=>{ syncError="Couldn't restore: "+(e.code||e.message); paintStatus(); }); }
+  for(const b of lost.visits){ visits.set(b.id, b); FB.setDoc(FB.doc(fdb,"visits",b.id), {...strip(b,"visits"), deleted:false, updatedAt:FB.serverTimestamp(), updatedBy:user.email}, {merge:true}).catch(e=>{ syncError="Couldn't restore: "+(e.code||e.message); paintStatus(); }); }
+  for(const b of lost.drits){ drits.set(b.id, b); FB.setDoc(FB.doc(fdb,"drits",b.id), {...strip(b,"drits"), deleted:false, updatedAt:FB.serverTimestamp(), updatedBy:user.email}, {merge:true}).catch(e=>{ dritError="Couldn't restore: "+(e.code||e.message); paintStatus(); }); }
   toast(`Restoring ${lost.projects.length+lost.visits.length+lost.drits.length} records`); location.hash="#/";
 }
 function forgetLost(){
