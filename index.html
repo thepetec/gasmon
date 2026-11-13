@@ -195,7 +195,7 @@ button:focus-visible,a:focus-visible{outline:3px solid var(--hv);outline-offset:
 <script src="weather.js"></script>
 <script>
 "use strict";
-const APP_VERSION = "3.6"; // keep in step with CACHE in sw.js
+const APP_VERSION = "3.7"; // keep in step with CACHE in sw.js
 
 /* ---------- Settings ---------- */
 const FIREBASE_CONFIG = {
@@ -1276,17 +1276,24 @@ function runningListHTML(){
       <div class="sub">${open?`Fill ${rs.length} running`:`Fill ${rs.length} read, refill due`}${since?` · <span data-since="${since}">${fmtElapsed(Date.now()-since)}</span>`:""}</div></div><span class="chev">›</span></a>`;
   }).join("")}</div>`;
 }
+// Tests on a project page: newest first, with finished tests hidden until asked for.
+let showFinishedTests = false;
 function projectDritsHTML(p){
-  const ds = projDrits(p.id);
-  let h = `<h2>Tests</h2>`;
-  if(dritError) h += `<p class="notice err-notice">${esc(dritError)}</p>`;
-  h += ds.length ? `<div class="list">${ds.map(d=>{
+  const ds = projDrits(p.id).slice().reverse(), open = ds.filter(d=>!d.finished), fin = ds.filter(d=>d.finished);
+  const item = d => {
       const done = dritCompleted(d), c = done.length ? dritCalc(done) : null;
       const status = isRunning(d) ? "Running" : d.finished ? "Finished" : "Not finished";
       return `<a class="item" href="#/d/${d.id}"><span class="tag">${esc(dritTitle(d))}</span><div class="main"><div class="title">${esc(fmtDate(d.date,false))}</div>
-        <div class="sub">${status} · ${done.length} fill${done.length===1?"":"s"}${c&&c.avgRate!==null?` · ${c.avgRate.toFixed(2)} mm/min`:""}</div></div><span class="chev">›</span></a>`; }).join("")}</div>`
-    : `<div class="panel empty"><p class="muted">No DRIT tests yet.</p></div>`;
-  h += `<div style="margin-top:12px"><button class="btn primary block" data-act="new-drit">New DRIT test</button></div>`;
+        <div class="sub">${status} · ${done.length} fill${done.length===1?"":"s"}${c&&c.avgRate!==null?` · ${c.avgRate.toFixed(2)} mm/min`:""}</div></div><span class="chev">›</span></a>`; };
+  let h = `<div style="margin:14px 0 4px"><button class="btn primary block" data-act="new-drit">New DRIT test</button></div><h2>Tests</h2>`;
+  if(dritError) h += `<p class="notice err-notice">${esc(dritError)}</p>`;
+  if(!ds.length) return h + `<div class="panel empty"><p class="muted">No DRIT tests yet.</p></div>`;
+  h += open.length ? `<div class="list">${open.map(item).join("")}</div>`
+    : `<div class="panel empty"><p class="muted">No tests in progress. ${fin.length} finished test${fin.length===1?"":"s"} ${showFinishedTests?"below":"hidden"}.</p></div>`;
+  if(fin.length){
+    h += `<button class="btn block" style="margin-top:12px" data-act="toggle-finished-tests">${showFinishedTests?"Hide":"Show"} finished tests (${fin.length})</button>`;
+    if(showFinishedTests) h += `<div class="list" style="margin-top:8px">${fin.map(item).join("")}</div>`;
+  }
   return h;
 }
 function newDrit(p){
@@ -1334,8 +1341,15 @@ function ctrlHTML(d){
     const since = timeMs(d, last, "start");
     // Estimate when this fill will have dropped about 10 cm, from the last completed fill's rate.
     const prev = rs.slice(0,-1).reverse().find(runComplete), rate = prev ? runRate(prev) : null;
+    // Target level for the refill: level after filling plus 10 cm.
+    const startLvl = num(last.after), target = startLvl!==null ? (startLvl + 10).toFixed(1) : null;
+    const tgt = target ? `Target level <b>${target} cm</b> (${startLvl.toFixed(1)} + 10).` : "";
     let est = "";
-    if(rate && rate>0 && since){ const at = new Date(since + 100/rate*60000); est = `<p class="small muted" style="margin:0 0 10px">At fill ${prev.n}'s rate, about 10 cm will have gone by <b>${hhmm(at)}</b>.</p>`; }
+    if(rate && rate>0 && since){ const at = new Date(since + 100/rate*60000);
+      est = `<p class="small muted" style="margin:0 0 10px">${target
+        ? `At fill ${prev.n}'s rate, <b>${target} cm</b> will be reached by <b>${hhmm(at)}</b> <span class="muted">(${startLvl.toFixed(1)} + 10)</span>.`
+        : `At fill ${prev.n}'s rate, about 10 cm will have gone by <b>${hhmm(at)}</b>.`}</p>`; }
+    else if(tgt) est = `<p class="small muted" style="margin:0 0 10px">${tgt}</p>`;
     const box = step.kind==="after"
       ? levelBoxHTML(`Level after filling, fill ${last.n}`, "drit-save-after", "Save level")
       : levelBoxHTML("Level before refill", "drit-end", `Read level — end fill ${last.n}`);
@@ -1574,6 +1588,7 @@ document.addEventListener("click", e=>{
   else if(act==="verify-continue") verifyContinue();
   else if(act==="verify-resend"){ FB.sendEmailVerification(user, {url: location.href.split("#")[0]}).then(()=>toast("Sent again. Check your inbox.")).catch(authError); }
   else if(act==="sign-out"){ flush(); FB.signOut(auth); location.hash="#/"; }
+  else if(act==="toggle-finished-tests"){ showFinishedTests=!showFinishedTests; route(true); }
   else if(act==="toggle-completed"){ const m=cur.mod||"gas"; showCompleted[m]=!showCompleted[m]; $("#plist").innerHTML=projectListHTML(m); }
   else if(act==="create-project") createProject();
   else if(act==="toggle-project-done"){
